@@ -1,21 +1,26 @@
 """
-CYBER RUNNER 2077 - FINAL PROJECT
+CYBER RUNNER 2077 - NEON HORIZON
 Course: CSE423 Computer Graphics via OpenGL
 Implementation: Functional Programming (No Classes)
-Strictly using allowed PyOpenGL functions.
+Strictly using allowed PyOpenGL functions per specification.
 
- CONTROLS:
-  [W]         : Move Forward / Stop Sliding
-  [S]         : Slide
-  [A] / [D]   : Lane Switch
+CONTROLS:
+  [W]         : Resume from slide
+  [S]         : Slide under obstacles
+  [A] / [D]   : Lane Switch (Left/Right)
   [SPACE]     : Jump
-  [MOUSE L]   : Laser / Charge Shot
-  [MOUSE R]   : Grenade
+  [MOUSE L]   : Laser Shot (Hold for Charge)
+  [MOUSE R]   : Grenade Launcher
   [F]         : First Person View
-  [C]         : God Mode
-  [V]         : Auto-Run AI
-  [B]         : Slow Motion
+  [1]         : Side View
+  [2]         : Top-Down View
+  [3]         : Cinematic View
+  [C]         : God Mode (Cheat)
+  [V]         : Auto-Run AI (Cheat)
+  [B]         : Slow Motion (Cheat)
   [P]         : Pause
+  [R]         : Restart
+  [Arrow Keys]: Camera Control
 """
 
 from OpenGL.GL import *
@@ -25,93 +30,162 @@ import math
 import random
 import time
 import sys
+from OpenGL.GLUT import GLUT_BITMAP_HELVETICA_18
 
 # =============================================================================
 # GLOBAL CONSTANTS & CONFIGURATION
 # =============================================================================
 
-WINDOW_WIDTH = 1000
-WINDOW_HEIGHT = 800
+WINDOW_WIDTH = 1200
+WINDOW_HEIGHT = 900
 WINDOW_TITLE = b"CYBER RUNNER 2077: NEON HORIZON"
 
-# Colors
-COL_NEON_BLUE = (0.0, 0.8, 1.0)
+# Neon Cyberpunk Color Palette
+COL_NEON_CYAN = (0.0, 1.0, 1.0)
 COL_NEON_PINK = (1.0, 0.0, 0.8)
+COL_NEON_BLUE = (0.0, 0.5, 1.0)
 COL_NEON_GREEN = (0.0, 1.0, 0.0)
-COL_WARNING = (1.0, 0.2, 0.0)
-COL_DARK_VOID = (0.02, 0.02, 0.05)
+COL_NEON_PURPLE = (0.8, 0.0, 1.0)
+COL_NEON_YELLOW = (1.0, 1.0, 0.0)
+COL_NEON_ORANGE = (1.0, 0.5, 0.0)
+COL_GOLD = (1.0, 0.84, 0.0)
+COL_WARNING = (1.0, 0.0, 0.0)
+COL_DARK_VOID = (0.05, 0.05, 0.15)
+COL_LIGHTER_SKY = (0.2, 0.3, 0.5)
 COL_WHITE = (1.0, 1.0, 1.0)
 COL_GRAY = (0.5, 0.5, 0.5)
+COL_BARRIER_RED = (0.8, 0.0, 0.0)
 
-# Physics
+# Physics Constants
 GRAVITY = -50.0
 JUMP_FORCE = 30.0
-LANE_WIDTH = 14.0
-MAX_SPEED = 120.0
-SPEED_INCREMENT = 1.0
+LANE_WIDTH = 13.0
+MAX_SPEED = 150.0
+SPEED_INCREMENT = 0.5
+INITIAL_SPEED = 60.0
+
+# Game Balance
+PLAYER_START_HEALTH = 3
+PLAYER_START_GRENADES = 5
+MAX_GRENADES = 5
+COMBO_TIMEOUT = 3.0
+VICTORY_SCORE = 5000
 
 # =============================================================================
 # GLOBAL STATE VARIABLES
 # =============================================================================
 
-# Game Status
-game_state = "menu"  # menu, playing, paused, gameover
+# Game Core
+game_state = "menu"  # menu, playing, paused, gameover, victory, loading
 last_time = 0
-current_speed = 60.0
+dt_accumulator = 0.0
+current_speed = INITIAL_SPEED
 total_distance = 0.0
 current_score = 0
+loading_countdown = 3.0
 
-# Camera
-camera_mode = "third" # third, first, top, side
-camera_x = 0
-camera_y = 20
-camera_z = 0
-camera_shake = 0
+# Camera System
+camera_mode = "third"  # third, first, side, top, cinematic
+camera_offset_y = 0.0  # Arrow key adjustment
+camera_rotation = 0.0  # Arrow key rotation
+camera_cinematic_angle = 0.0
 
-# Player
+# Player State
 player_x = 0.0
 player_y = 0.0
 player_z = 0.0
-player_lane_index = 1 # 0, 1, 2
+player_lane_index = 1  # 0=left, 1=center, 2=right
 player_velocity_y = 0.0
 player_is_jumping = False
 player_is_sliding = False
 player_slide_timer = 0.0
-player_health = 3
-player_grenades = 5
+player_health = PLAYER_START_HEALTH
+player_grenades = PLAYER_START_GRENADES
 player_god_mode = False
 player_has_shield = False
 player_charging = False
 player_charge_start_time = 0.0
 player_animation_phase = 0.0
+player_damage_flash = 0.0
+player_perfect_dodge_count = 0
 
-# Game Objects (Lists of dictionaries)
+# Combo System
+combo_multiplier = 1
+combo_last_collect_time = 0.0
+
+# Game Objects Collections
 obstacles = []
 collectibles = []
 projectiles = []
 particles = []
 environment_buildings = []
 environment_stars = []
+floating_platforms = []
 
-# AI / Cheats
+# Difficulty Progression
+difficulty_level = 1
+obstacle_spawn_rate = 0.02
+last_speed_up_score = 0
+
+# Cheats & AI
 ai_auto_run = False
 slow_motion = False
+
+# Statistics
+stats_obstacles_dodged = 0
+stats_gems_collected = 0
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
+def lerp(a, b, t):
+    """Linear interpolation."""
+    return a + (b - a) * t
+
+def clamp(value, min_val, max_val):
+    """Clamp value between min and max."""
+    return max(min_val, min(max_val, value))
+
+def distance_3d(x1, y1, z1, x2, y2, z2):
+    """Calculate 3D distance."""
+    return math.sqrt((x2-x1)**2 + (y2-y1)**2 + (z2-z1)**2)
+
+def color_lerp(c1, c2, t):
+    """Interpolate between two colors."""
+    return (lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t))
 
 # =============================================================================
 # INITIALIZATION FUNCTIONS
 # =============================================================================
 
 def init_game():
-    """Initialize all global variables."""
+    """Initialize all global variables for new game."""
     global game_state, current_speed, total_distance, current_score, last_time
-    global player_x, player_y, player_z, player_health, player_grenades
-    global obstacles, collectibles, projectiles, particles, environment_buildings
+    global obstacles, collectibles, projectiles, particles
+    global environment_buildings, floating_platforms
+    global difficulty_level, obstacle_spawn_rate, last_speed_up_score
+    global combo_multiplier, combo_last_collect_time
+    global stats_obstacles_dodged, stats_gems_collected
+    global loading_countdown, player_perfect_dodge_count
     
     game_state = "menu"
-    current_speed = 60.0
+    current_speed = INITIAL_SPEED
     total_distance = 0.0
     current_score = 0
     last_time = time.time()
+    loading_countdown = 3.0
+    
+    difficulty_level = 1
+    obstacle_spawn_rate = 0.02
+    last_speed_up_score = 0
+    
+    combo_multiplier = 1
+    combo_last_collect_time = 0.0
+    
+    stats_obstacles_dodged = 0
+    stats_gems_collected = 0
+    player_perfect_dodge_count = 0
     
     reset_player()
     
@@ -119,439 +193,828 @@ def init_game():
     collectibles = []
     projectiles = []
     particles = []
+    environment_buildings = []
+    floating_platforms = []
     
     init_environment()
-    print("Game Initialized.")
+    print("[INIT] Game Initialized Successfully")
 
 def reset_player():
-    """Resets player state."""
+    """Reset player to starting state."""
     global player_x, player_y, player_z, player_lane_index
-    global player_velocity_y, player_is_jumping, player_health
-    global player_grenades, player_has_shield
+    global player_velocity_y, player_is_jumping, player_is_sliding
+    global player_health, player_grenades, player_has_shield
+    global player_damage_flash, player_animation_phase
     
     player_x = 0.0
     player_y = 0.0
-    player_z = 0.0 # Player stays at Z=0 mostly
+    player_z = 0.0
     player_lane_index = 1
     player_velocity_y = 0.0
     player_is_jumping = False
-    player_health = 3
-    player_grenades = 5
+    player_is_sliding = False
+    player_health = PLAYER_START_HEALTH
+    player_grenades = PLAYER_START_GRENADES
     player_has_shield = False
+    player_damage_flash = 0.0
+    player_animation_phase = 0.0
 
 def init_environment():
-    """Generates static environment elements like stars."""
-    global environment_stars, environment_buildings
+    """Generate static environment elements."""
+    global environment_stars, environment_buildings, floating_platforms
+    
     environment_stars = []
     environment_buildings = []
+    floating_platforms = []
     
-    # Generate Stars
-    for i in range(200):
+    # Generate starfield
+    for i in range(300):
         star = {
-            'x': random.uniform(-300, 300),
-            'y': random.uniform(50, 200),
-            'z': random.uniform(-100, -500),
-            'size': random.uniform(1, 3)
+            'x': random.uniform(-400, 400),
+            'y': random.uniform(50, 250),
+            'z': random.uniform(-100, -800),
+            'size': random.uniform(1.5, 4.0),
+            'brightness': random.uniform(0.5, 1.0)
         }
         environment_stars.append(star)
-
-    # Initial Buildings
-    for i in range(30):
+    
+    # Initial buildings
+    for i in range(40):
         spawn_building(initial=True)
+    
+    # Floating platforms for depth
+    for i in range(20):
+        spawn_floating_platform(initial=True)
 
 # =============================================================================
-# GEOMETRY DRAWING FUNCTIONS (MANUAL PRIMITIVES)
+# PRIMITIVE DRAWING FUNCTIONS (MANUAL TRIANGLES ONLY)
 # =============================================================================
 
-def draw_cube_manual(x, y, z, size, color, wireframe=False):
-    """Draws a cube using GL_TRIANGLES manually."""
+def draw_triangle_cube(x, y, z, size, color):
+    """Draw a cube using 12 triangles (2 per face)."""
     s = size / 2.0
     
     glPushMatrix()
     glTranslatef(x, y, z)
     
-    if wireframe:
-        glBegin(GL_LINES)
-    else:
-        glBegin(GL_TRIANGLES)
-        
-    # Helpers for vertices
-    v1 = (-s, s, s); v2 = (s, s, s); v3 = (s, -s, s); v4 = (-s, -s, s) # Front
-    v5 = (-s, s, -s); v6 = (s, s, -s); v7 = (s, -s, -s); v8 = (-s, -s, -s) # Back
+    # Define 8 vertices
+    v = [
+        (-s, -s, -s), (s, -s, -s), (s, s, -s), (-s, s, -s),  # Back face
+        (-s, -s, s), (s, -s, s), (s, s, s), (-s, s, s)       # Front face
+    ]
     
-    # Front Face
-    if not wireframe: glColor3f(color[0], color[1], color[2])
-    else: glColor3f(1,1,1)
-    glVertex3f(*v1); glVertex3f(*v4); glVertex3f(*v3)
-    glVertex3f(*v1); glVertex3f(*v3); glVertex3f(*v2)
+    glBegin(GL_TRIANGLES)
     
-    # Back Face
-    c_dark = [c*0.5 for c in color]
-    if not wireframe: glColor3f(*c_dark)
-    glVertex3f(*v5); glVertex3f(*v6); glVertex3f(*v7)
-    glVertex3f(*v5); glVertex3f(*v7); glVertex3f(*v8)
+    # Front face (brighter)
+    glColor3f(color[0], color[1], color[2])
+    glVertex3f(*v[4]); glVertex3f(*v[5]); glVertex3f(*v[6])
+    glVertex3f(*v[4]); glVertex3f(*v[6]); glVertex3f(*v[7])
     
-    # Top Face
-    c_light = [min(1.0, c*1.3) for c in color]
-    if not wireframe: glColor3f(*c_light)
-    glVertex3f(*v5); glVertex3f(*v1); glVertex3f(*v2)
-    glVertex3f(*v5); glVertex3f(*v2); glVertex3f(*v6)
+    # Back face (darker)
+    dark = tuple(c * 0.4 for c in color)
+    glColor3f(*dark)
+    glVertex3f(*v[0]); glVertex3f(*v[3]); glVertex3f(*v[2])
+    glVertex3f(*v[0]); glVertex3f(*v[2]); glVertex3f(*v[1])
     
-    # Bottom Face
-    if not wireframe: glColor3f(*c_dark)
-    glVertex3f(*v8); glVertex3f(*v7); glVertex3f(*v3)
-    glVertex3f(*v8); glVertex3f(*v3); glVertex3f(*v4)
+    # Top face
+    light = tuple(min(1.0, c * 1.2) for c in color)
+    glColor3f(*light)
+    glVertex3f(*v[3]); glVertex3f(*v[7]); glVertex3f(*v[6])
+    glVertex3f(*v[3]); glVertex3f(*v[6]); glVertex3f(*v[2])
     
-    # Right Face
-    if not wireframe: glColor3f(*color)
-    glVertex3f(*v2); glVertex3f(*v3); glVertex3f(*v7)
-    glVertex3f(*v2); glVertex3f(*v7); glVertex3f(*v6)
+    # Bottom face
+    glColor3f(*dark)
+    glVertex3f(*v[0]); glVertex3f(*v[1]); glVertex3f(*v[5])
+    glVertex3f(*v[0]); glVertex3f(*v[5]); glVertex3f(*v[4])
     
-    # Left Face
-    if not wireframe: glColor3f(*color)
-    glVertex3f(*v5); glVertex3f(*v8); glVertex3f(*v4)
-    glVertex3f(*v5); glVertex3f(*v4); glVertex3f(*v1)
+    # Right face
+    med = tuple(c * 0.7 for c in color)
+    glColor3f(*med)
+    glVertex3f(*v[1]); glVertex3f(*v[2]); glVertex3f(*v[6])
+    glVertex3f(*v[1]); glVertex3f(*v[6]); glVertex3f(*v[5])
+    
+    # Left face
+    glColor3f(*med)
+    glVertex3f(*v[0]); glVertex3f(*v[4]); glVertex3f(*v[7])
+    glVertex3f(*v[0]); glVertex3f(*v[7]); glVertex3f(*v[3])
     
     glEnd()
     glPopMatrix()
 
-def draw_cylinder_manual(base_radius, top_radius, height, slices, color):
-    """Draws a cylinder/cone using GL_TRIANGLES."""
+def draw_triangle_sphere(radius, slices, stacks, color):
+    """Draw sphere approximation using triangles."""
     glBegin(GL_TRIANGLES)
+    
+    for i in range(stacks):
+        lat0 = math.pi * (-0.5 + float(i) / stacks)
+        z0 = math.sin(lat0)
+        zr0 = math.cos(lat0)
+        
+        lat1 = math.pi * (-0.5 + float(i + 1) / stacks)
+        z1 = math.sin(lat1)
+        zr1 = math.cos(lat1)
+        
+        for j in range(slices):
+            lng0 = 2 * math.pi * float(j) / slices
+            x0 = math.cos(lng0)
+            y0 = math.sin(lng0)
+            
+            lng1 = 2 * math.pi * float(j + 1) / slices
+            x1 = math.cos(lng1)
+            y1 = math.sin(lng1)
+            
+            # Vertices
+            v1 = (x0 * zr0 * radius, y0 * zr0 * radius, z0 * radius)
+            v2 = (x0 * zr1 * radius, y0 * zr1 * radius, z1 * radius)
+            v3 = (x1 * zr0 * radius, y1 * zr0 * radius, z0 * radius)
+            v4 = (x1 * zr1 * radius, y1 * zr1 * radius, z1 * radius)
+            
+            # Shading based on height
+            shade = 0.6 + 0.4 * z0
+            glColor3f(color[0] * shade, color[1] * shade, color[2] * shade)
+            
+            glVertex3f(*v1); glVertex3f(*v2); glVertex3f(*v3)
+            glVertex3f(*v3); glVertex3f(*v2); glVertex3f(*v4)
+    
+    glEnd()
+
+def draw_triangle_cylinder(base_radius, top_radius, height, slices, color):
+    """Draw cylinder/cone using triangular strips."""
+    glBegin(GL_TRIANGLES)
+    
     for i in range(slices):
         theta1 = 2.0 * math.pi * i / slices
         theta2 = 2.0 * math.pi * (i + 1) / slices
         
-        # Bottom Circle coords
+        # Bottom vertices
         x1_b = base_radius * math.cos(theta1)
         y1_b = base_radius * math.sin(theta1)
         x2_b = base_radius * math.cos(theta2)
         y2_b = base_radius * math.sin(theta2)
         
-        # Top Circle coords
+        # Top vertices
         x1_t = top_radius * math.cos(theta1)
         y1_t = top_radius * math.sin(theta1)
         x2_t = top_radius * math.cos(theta2)
         y2_t = top_radius * math.sin(theta2)
         
-        # Side 1 (Triangle 1)
-        shade1 = 0.5 + 0.5 * math.cos(theta1)
-        glColor3f(color[0]*shade1, color[1]*shade1, color[2]*shade1)
+        # Side faces (2 triangles per slice)
+        shade = 0.5 + 0.5 * math.cos(theta1)
+        glColor3f(color[0] * shade, color[1] * shade, color[2] * shade)
+        
         glVertex3f(x1_b, y1_b, 0)
         glVertex3f(x2_b, y2_b, 0)
         glVertex3f(x1_t, y1_t, height)
         
-        # Side 2 (Triangle 2)
         glVertex3f(x2_b, y2_b, 0)
         glVertex3f(x2_t, y2_t, height)
         glVertex3f(x1_t, y1_t, height)
         
-        # Bottom Cap
-        glColor3f(color[0]*0.2, color[1]*0.2, color[2]*0.2)
+        # Bottom cap
+        dark = tuple(c * 0.3 for c in color)
+        glColor3f(*dark)
         glVertex3f(0, 0, 0)
         glVertex3f(x2_b, y2_b, 0)
         glVertex3f(x1_b, y1_b, 0)
         
-        # Top Cap
-        glVertex3f(0, 0, height)
-        glVertex3f(x1_t, y1_t, height)
-        glVertex3f(x2_t, y2_t, height)
-        
+        # Top cap
+        if top_radius > 0:
+            glVertex3f(0, 0, height)
+            glVertex3f(x1_t, y1_t, height)
+            glVertex3f(x2_t, y2_t, height)
+    
     glEnd()
 
-def draw_sphere_manual(radius, slices, stacks, color):
-    """Draws a sphere using GL_TRIANGLES."""
-    glBegin(GL_TRIANGLES)
-    for i in range(slices):
-        lat0 = math.pi * (-0.5 + float(i) / slices)
-        z0 = math.sin(lat0)
-        zr0 = math.cos(lat0)
-        
-        lat1 = math.pi * (-0.5 + float(i+1) / slices)
-        z1 = math.sin(lat1)
-        zr1 = math.cos(lat1)
-        
-        for j in range(stacks):
-            lng0 = 2 * math.pi * float(j) / stacks
-            x0 = math.cos(lng0)
-            y0 = math.sin(lng0)
-            
-            lng1 = 2 * math.pi * float(j+1) / stacks
-            x1 = math.cos(lng1)
-            y1 = math.sin(lng1)
-            
-            # Vertices
-            v1 = (x0*zr0*radius, y0*zr0*radius, z0*radius)
-            v2 = (x0*zr1*radius, y0*zr1*radius, z1*radius)
-            v3 = (x1*zr0*radius, y1*zr0*radius, z0*radius)
-            v4 = (x1*zr1*radius, y1*zr1*radius, z1*radius)
-            
-            # Color Shading based on Z (Height)
-            shade = 0.5 + 0.5 * z0
-            glColor3f(color[0]*shade, color[1]*shade, color[2]*shade)
-            
-            glVertex3f(*v1); glVertex3f(*v2); glVertex3f(*v3)
-            glVertex3f(*v3); glVertex3f(*v2); glVertex3f(*v4)
-    glEnd()
+def draw_triangle_cone(base_radius, height, slices, color):
+    """Draw cone (cylinder with top_radius=0)."""
+    draw_triangle_cylinder(base_radius, 0.0, height, slices, color)
 
 # =============================================================================
-# DRAWING HELPERS (COMPLEX OBJECTS)
+# COMPLEX CHARACTER & OBJECT DRAWING
 # =============================================================================
 
 def draw_robot_player():
-    """Draws the detailed robot player character."""
+    """Draw detailed humanoid robot with 6 primitive shapes."""
     global player_x, player_y, player_z, player_is_sliding, player_animation_phase
-    global player_god_mode, player_has_shield, player_charging, player_charge_start_time
+    global player_god_mode, player_has_shield, player_charging
+    global player_charge_start_time, player_damage_flash
     
     glPushMatrix()
     glTranslatef(player_x, player_y, player_z)
     
-    # Slide Rotation (Leans back)
+    # Slide animation (rotate backward)
     if player_is_sliding:
         glRotatef(-45, 1, 0, 0)
-        glTranslatef(0, -1, 1) # Adjust center
-        
-    # Base Color
-    col = COL_NEON_BLUE
-    if player_god_mode: col = (1.0, 0.8, 0.0) # Gold
-    elif player_has_shield: col = COL_NEON_GREEN
+        glTranslatef(0, -1.5, 1.5)
     
-    # 1. Torso
-    glPushMatrix()
-    glScalef(1.2, 1.8, 0.8)
-    draw_cube_manual(0, 0, 0, 1.0, col)
-    # Chest Light
-    glTranslatef(0, 0.2, 0.51)
-    draw_cube_manual(0, 0, 0, 0.3, (1,1,1))
-    glPopMatrix()
+    # Determine color scheme
+    base_color = COL_NEON_CYAN
+    if player_god_mode:
+        base_color = COL_GOLD
+    elif player_has_shield:
+        base_color = COL_NEON_GREEN
     
-    # 2. Head
-    glPushMatrix()
-    glTranslatef(0, 1.4, 0)
-    draw_sphere_manual(0.5, 12, 12, (0.8, 0.8, 0.8))
-    # Eyes/Visor
-    glTranslatef(0, 0.1, 0.4)
-    glScalef(0.8, 0.2, 0.2)
-    draw_cube_manual(0, 0, 0, 1.0, COL_NEON_PINK)
-    glPopMatrix()
+    # Damage flash effect
+    if player_damage_flash > 0:
+        flash_amt = player_damage_flash
+        base_color = color_lerp(base_color, COL_WARNING, flash_amt)
     
-    # 3. Animation Logic
+    # Animation parameters
     run_cycle = math.sin(player_animation_phase)
-    arm_sway = run_cycle * 30
-    leg_sway = run_cycle * 40
+    arm_swing = run_cycle * 25
+    leg_swing = run_cycle * 35
     
-    # 4. Arms
-    # Left Arm
+    # 1. TORSO (Cuboid)
     glPushMatrix()
-    glTranslatef(-0.8, 0.5, 0)
-    glRotatef(arm_sway, 1, 0, 0)
-    glRotatef(90, 1, 0, 0) # Cylinder points Z usually, rotate to point down
-    draw_cylinder_manual(0.2, 0.2, 1.2, 8, col)
-    # Hand
-    glTranslatef(0, 0, 1.2)
-    draw_sphere_manual(0.25, 6, 6, (0.2, 0.2, 0.2))
+    glScalef(1.2, 1.8, 0.9)
+    draw_triangle_cube(0, 0, 0, 1.0, base_color)
     glPopMatrix()
     
-    # Right Arm (Weapon)
+    # Chest core light
     glPushMatrix()
-    glTranslatef(0.8, 0.5, 0)
-    glRotatef(-arm_sway, 1, 0, 0)
-    # Gun
-    glPushMatrix()
-    glTranslatef(0, 0, 0.5)
-    glRotatef(90, 0, 0, 1) 
-    glScalef(0.3, 0.3, 1.0)
-    draw_cube_manual(0, 0, 0, 1.0, (0.3, 0.3, 0.3))
+    glTranslatef(0, 0.3, 0.55)
+    pulse = 0.8 + 0.2 * math.sin(player_animation_phase * 3)
+    glScalef(pulse, pulse, pulse)
+    draw_triangle_cube(0, 0, 0, 0.3, COL_WHITE)
+    glPopMatrix()
     
-    # Charge Effect
+    # 2. HEAD (Sphere)
+    glPushMatrix()
+    glTranslatef(0, 1.5, 0)
+    draw_triangle_sphere(0.5, 12, 12, (0.85, 0.85, 0.85))
+    
+    # Visor (eyes)
+    glTranslatef(0, 0.1, 0.45)
+    glScalef(0.8, 0.2, 0.15)
+    draw_triangle_cube(0, 0, 0, 1.0, COL_NEON_PINK)
+    glPopMatrix()
+    
+    # 3. LEFT ARM (Cylinder)
+    glPushMatrix()
+    glTranslatef(-0.85, 0.6, 0)
+    glRotatef(arm_swing, 1, 0, 0)
+    glRotatef(90, 1, 0, 0)
+    draw_triangle_cylinder(0.2, 0.18, 1.3, 10, base_color)
+    
+    # Left hand (sphere)
+    glTranslatef(0, 0, 1.3)
+    draw_triangle_sphere(0.22, 8, 8, (0.2, 0.2, 0.25))
+    glPopMatrix()
+    
+    # 4. RIGHT ARM WITH WEAPON (Cylinder)
+    glPushMatrix()
+    glTranslatef(0.85, 0.6, 0)
+    glRotatef(-arm_swing * 0.5, 1, 0, 0)
+    
+    # Weapon attachment
+    glPushMatrix()
+    glTranslatef(0, 0, 0.7)
+    glRotatef(90, 0, 0, 1)
+    glScalef(0.3, 0.3, 1.2)
+    draw_triangle_cube(0, 0, 0, 1.0, (0.3, 0.3, 0.35))
+    
+    # Weapon barrel tip
+    glTranslatef(0, 0, 0.6)
+    draw_triangle_cylinder(0.15, 0.1, 0.4, 8, (0.5, 0.5, 0.55))
+    
+    # Charge effect visualization
     if player_charging:
-        charge_duration = time.time() - player_charge_start_time
-        charge_scale = min(charge_duration, 2.0) * 0.5
-        glTranslatef(0, 0, 0.6)
-        draw_sphere_manual(charge_scale, 8, 8, COL_NEON_PINK)
+        charge_time = time.time() - player_charge_start_time
+        charge_size = min(charge_time * 0.6, 1.2)
+        charge_pulse = 1.0 + 0.2 * math.sin(charge_time * 10)
+        
+        glTranslatef(0, 0, 0.3)
+        glScalef(charge_pulse, charge_pulse, charge_pulse)
+        draw_triangle_sphere(charge_size, 12, 12, COL_NEON_PINK)
     glPopMatrix()
     
-    glRotatef(90, 1, 0, 0) # Arm body
-    draw_cylinder_manual(0.2, 0.2, 1.2, 8, col)
-    glPopMatrix()
-    
-    # 5. Legs
-    # Left Leg
-    glPushMatrix()
-    glTranslatef(-0.4, -1.0, 0)
-    glRotatef(-leg_sway, 1, 0, 0)
+    # Arm cylinder
     glRotatef(90, 1, 0, 0)
-    draw_cylinder_manual(0.25, 0.2, 1.5, 8, col)
+    draw_triangle_cylinder(0.2, 0.18, 1.3, 10, base_color)
     glPopMatrix()
     
-    # Right Leg
+    # 5. LEFT LEG (Cylinder)
     glPushMatrix()
-    glTranslatef(0.4, -1.0, 0)
-    glRotatef(leg_sway, 1, 0, 0)
+    glTranslatef(-0.35, -1.1, 0)
+    glRotatef(-leg_swing, 1, 0, 0)
     glRotatef(90, 1, 0, 0)
-    draw_cylinder_manual(0.25, 0.2, 1.5, 8, col)
+    draw_triangle_cylinder(0.25, 0.2, 1.6, 10, base_color)
     glPopMatrix()
     
-    # Shield Visualization
+    # 6. RIGHT LEG (Cylinder)
+    glPushMatrix()
+    glTranslatef(0.35, -1.1, 0)
+    glRotatef(leg_swing, 1, 0, 0)
+    glRotatef(90, 1, 0, 0)
+    draw_triangle_cylinder(0.25, 0.2, 1.6, 10, base_color)
+    glPopMatrix()
+    
+    # Shield effect (wireframe sphere using points)
     if player_has_shield:
         glPushMatrix()
-        shield_pulse = 1.0 + 0.1 * math.sin(player_animation_phase * 2)
+        shield_pulse = 1.0 + 0.15 * math.sin(player_animation_phase * 2.5)
         glScalef(shield_pulse, shield_pulse, shield_pulse)
-        # Wireframe sphere-ish
-        glColor3f(0, 1, 0)
-        glutWireSphere(2.0, 12, 12) # Wait, is glutWireSphere allowed? The prompt didn't forbid it explicitly but "Allowed Primitive Types" implies manual.
-        # Let's use manual wireframe sphere for safety as user said "do not use any python class function.. see practice.py again" 
-        # and "strictly allowed PyOpenGL Functions". Original practice.py used draw_sphere_triangles.
-        # I will use my manual sphere but in point mode? Or lines?
-        # Actually I can just draw a transparent-looking sphere with points.
+        
         glPointSize(3.0)
         glBegin(GL_POINTS)
-        for i in range(50):
-            theta = random.uniform(0, 6.28)
-            phi = random.uniform(-1.57, 1.57)
-            sx = 2.0 * math.cos(theta) * math.cos(phi)
-            sy = 2.0 * math.sin(phi)
-            sz = 2.0 * math.sin(theta) * math.cos(phi)
-            glVertex3f(sx, sy, sz)
+        glColor3f(0.0, 1.0, 0.0)
+        
+        # Distribute points on sphere surface
+        for i in range(100):
+            theta = random.uniform(0, 2 * math.pi)
+            phi = random.uniform(-math.pi/2, math.pi/2)
+            r = 2.2
+            px = r * math.cos(phi) * math.cos(theta)
+            py = r * math.sin(phi)
+            pz = r * math.cos(phi) * math.sin(theta)
+            glVertex3f(px, py, pz)
+        
         glEnd()
         glPopMatrix()
-
+    
     glPopMatrix()
 
-def draw_environment():
-    """Draws the scrolling background and floor."""
-    global total_distance, environment_stars, environment_buildings
+def draw_heart(x, y, size, color):
+    """Draw a heart shape using triangles for HUD."""
+    glPushMatrix()
+    glTranslatef(x, y, 0)
+    glScalef(size, size, size)
     
-    # 1. Sky (Stars)
+    glBegin(GL_TRIANGLES)
+    glColor3f(*color)
+    
+    # Heart shape approximation (10 triangles)
+    # Center triangle
+    glVertex3f(0, -0.3, 0)
+    glVertex3f(-0.3, 0.1, 0)
+    glVertex3f(0.3, 0.1, 0)
+    
+    # Left lobe
+    glVertex3f(-0.3, 0.1, 0)
+    glVertex3f(-0.5, 0.3, 0)
+    glVertex3f(-0.3, 0.4, 0)
+    
+    glVertex3f(-0.3, 0.1, 0)
+    glVertex3f(-0.3, 0.4, 0)
+    glVertex3f(0, 0.3, 0)
+    
+    # Right lobe
+    glVertex3f(0.3, 0.1, 0)
+    glVertex3f(0.3, 0.4, 0)
+    glVertex3f(0.5, 0.3, 0)
+    
+    glVertex3f(0.3, 0.1, 0)
+    glVertex3f(0, 0.3, 0)
+    glVertex3f(0.3, 0.4, 0)
+    
+    # Bottom point
+    glVertex3f(0, -0.3, 0)
+    glVertex3f(-0.15, -0.1, 0)
+    glVertex3f(0, -0.1, 0)
+    
+    glVertex3f(0, -0.3, 0)
+    glVertex3f(0, -0.1, 0)
+    glVertex3f(0.15, -0.1, 0)
+    
+    glEnd()
+    glPopMatrix()
+
+# =============================================================================
+# ENVIRONMENT RENDERING
+# =============================================================================
+
+def draw_environment():
+    """Draw the complete cyberpunk environment."""
+    global total_distance, environment_stars, environment_buildings, floating_platforms
+    
+    # Starfield removed for cleaner visual
+    
+    # 2. SKY GRADIENT (Using large triangles)
     glDisable(GL_DEPTH_TEST)
-    glPointSize(2.0)
-    glBegin(GL_POINTS)
-    glColor3f(1, 1, 1)
-    for star in environment_stars:
-        glVertex3f(star['x'], star['y'], star['z'])
+    glBegin(GL_TRIANGLES)
+    
+    # Top half (darker)
+    glColor3f(*COL_DARK_VOID)
+    glVertex3f(-500, 300, -500)
+    glVertex3f(500, 300, -500)
+    glColor3f(*COL_LIGHTER_SKY)
+    glVertex3f(0, 0, -500)
+    
+    # Bottom half (lighter)
+    glColor3f(*COL_LIGHTER_SKY)
+    glVertex3f(-500, 0, -500)
+    glVertex3f(500, 0, -500)
+    glVertex3f(0, 0, -500)
+    
     glEnd()
     glEnable(GL_DEPTH_TEST)
     
-    # 2. Infinite Grid Floor
-    # Grid moves by offsetting Texture Coordinates equivalent concept manually
+    # 3. INFINITE GRID FLOOR
+    draw_grid_floor()
+    
+    # 4. LANE DIVIDERS
+    draw_lane_dividers()
+    
+    # 5. SIDE WALLS
+    draw_side_walls()
+    
+    # 6. BACKGROUND BUILDINGS
+    for building in environment_buildings:
+        draw_triangle_cube(building['x'], building['height'] / 2, building['z'],
+                          building['width'], building['color'])
+        
+        # Building windows removed for cleaner visual
+    
+    # 7. FLOATING PLATFORMS
+    for platform in floating_platforms:
+        glPushMatrix()
+        glTranslatef(platform['x'], platform['y'], platform['z'])
+        glRotatef(platform['rot'], 0, 1, 0)
+        draw_triangle_cube(0, 0, 0, platform['size'], platform['color'])
+        glPopMatrix()
+
+def draw_grid_floor():
+    """Draw scrolling neon grid floor."""
+    global total_distance, current_speed
+    
+    # Dynamic color based on speed
+    speed_ratio = current_speed / MAX_SPEED
+    if speed_ratio < 0.25:
+        grid_color = COL_NEON_PURPLE
+    elif speed_ratio < 0.5:
+        grid_color = color_lerp(COL_NEON_PURPLE, COL_NEON_PINK, (speed_ratio - 0.25) * 4)
+    elif speed_ratio < 0.75:
+        grid_color = color_lerp(COL_NEON_PINK, COL_NEON_CYAN, (speed_ratio - 0.5) * 4)
+    else:
+        grid_color = color_lerp(COL_NEON_CYAN, COL_NEON_BLUE, (speed_ratio - 0.75) * 4)
+    
+    # Grid scrolling offset
     grid_offset = total_distance % 20
     
-    glLineWidth(2.0)
+    glLineWidth(2.5)
     glBegin(GL_LINES)
     
-    # Color Pulse
-    pulse = 0.5 + 0.5 * math.sin(total_distance * 0.05)
-    r = COL_NEON_PINK[0] * pulse + COL_NEON_BLUE[0] * (1-pulse)
-    g = COL_NEON_PINK[1] * pulse + COL_NEON_BLUE[1] * (1-pulse)
-    b = COL_NEON_PINK[2] * pulse + COL_NEON_BLUE[2] * (1-pulse)
-    glColor3f(r, g, b)
-    
-    # Longitudinal Lines
-    for x in range(-5, 6):
+    # Longitudinal lines (along track)
+    for x in range(-4, 5):
         x_pos = x * LANE_WIDTH
+        fade_factor = 1.0 - abs(x) / 5.0
+        glColor3f(grid_color[0] * fade_factor, 
+                 grid_color[1] * fade_factor, 
+                 grid_color[2] * fade_factor)
         glVertex3f(x_pos, 0, 50)
-        glVertex3f(x_pos, 0, -500)
+        glVertex3f(x_pos, 0, -600)
     
-    # Lateral Lines (Creating illusion of speed)
-    for z in range(0, 550, 20):
+    # Lateral lines (perpendicular to track)
+    for z in range(0, 650, 20):
         z_pos = 50 - z + grid_offset
-        # Fade out in distance
-        dist_factor = 1.0 - (abs(z_pos) / 500.0)
-        if dist_factor < 0: dist_factor = 0
-        glColor3f(r*dist_factor, g*dist_factor, b*dist_factor)
+        dist_fade = 1.0 - abs(z_pos + 200) / 600.0
+        dist_fade = max(0.0, dist_fade)
         
-        if z_pos > -500:
-            glVertex3f(-70, 0, z_pos)
-            glVertex3f(70, 0, z_pos)
-            
+        glColor3f(grid_color[0] * dist_fade, 
+                 grid_color[1] * dist_fade, 
+                 grid_color[2] * dist_fade)
+        
+        if z_pos > -600:
+            glVertex3f(-60, 0, z_pos)
+            glVertex3f(60, 0, z_pos)
+    
     glEnd()
     glLineWidth(1.0)
+
+def draw_lane_dividers():
+    """Draw bright cyan lane dividing lines."""
+    glLineWidth(3.0)
+    glBegin(GL_LINES)
+    glColor3f(*COL_NEON_CYAN)
     
-    # 3. Buildings (Scrolling)
-    for b in environment_buildings:
-        draw_cube_manual(b['x'], b['height']/2, b['z'], b['width'], b['color'])
-        # Windows
-        glColor3f(1, 1, 0)
-        glPointSize(3.0)
-        glBegin(GL_POINTS)
-        # Random windows on the building face
-        for i in range(5):
-             wx = b['x'] + b['width']/2 + 0.1
-             wy = random.uniform(0, b['height'])
-             wz = b['z'] + random.uniform(-5, 5)
-             glVertex3f(wx, wy, wz)
-        glEnd()
+    # Left divider
+    glVertex3f(-LANE_WIDTH, 0.1, 50)
+    glVertex3f(-LANE_WIDTH, 0.1, -600)
+    
+    # Right divider
+    glVertex3f(LANE_WIDTH, 0.1, 50)
+    glVertex3f(LANE_WIDTH, 0.1, -600)
+    
+    glEnd()
+    glLineWidth(1.0)
+
+def draw_side_walls():
+    """Draw pulsating red boundary walls."""
+    pulse = 1.0 + 0.1 * math.sin(time.time() * 2)
+    wall_height = 10.0 * pulse
+    
+    # Left wall
+    glPushMatrix()
+    glTranslatef(-50, wall_height / 2, -300)
+    glScalef(2, wall_height, 600)
+    draw_triangle_cube(0, 0, 0, 1.0, COL_BARRIER_RED)
+    glPopMatrix()
+    
+    # Right wall
+    glPushMatrix()
+    glTranslatef(50, wall_height / 2, -300)
+    glScalef(2, wall_height, 600)
+    draw_triangle_cube(0, 0, 0, 1.0, COL_BARRIER_RED)
+    glPopMatrix()
+
+# =============================================================================
+# GAME OBJECTS RENDERING
+# =============================================================================
+
+def draw_obstacles():
+    """Draw all obstacle types."""
+    for obs in obstacles:
+        if obs['type'] == 'barrier':
+            # Red glowing cuboid barrier
+            draw_triangle_cube(obs['x'], 2.5, obs['z'], 4.5, COL_BARRIER_RED)
+            
+            # Health indicator (small cubes on top)
+            for i in range(obs['hp']):
+                glPushMatrix()
+                glTranslatef(obs['x'] - 1 + i * 1, 5.5, obs['z'])
+                draw_triangle_cube(0, 0, 0, 0.4, COL_WHITE)
+                glPopMatrix()
+        
+        elif obs['type'] == 'spike':
+            # Rotating spike cone
+            glPushMatrix()
+            glTranslatef(obs['x'], 0, obs['z'])
+            glRotatef(obs.get('rot', 0), 0, 1, 0)
+            glRotatef(-90, 1, 0, 0)
+            draw_triangle_cone(1.2, 4.0, 12, COL_NEON_ORANGE)
+            glPopMatrix()
+        
+        elif obs['type'] == 'beam':
+            # Horizontal rotating cylinder
+            glPushMatrix()
+            glTranslatef(obs['x'], 2.0, obs['z'])
+            glRotatef(obs.get('rot', 0), 0, 0, 1)
+            glRotatef(90, 0, 1, 0)
+            draw_triangle_cylinder(1.0, 1.0, 14.0, 12, COL_GRAY)
+            
+            # Glowing ends
+            glTranslatef(0, 0, 7)
+            draw_triangle_sphere(1.2, 8, 8, COL_WARNING)
+            glTranslatef(0, 0, -14)
+            draw_triangle_sphere(1.2, 8, 8, COL_WARNING)
+            glPopMatrix()
+        
+        elif obs['type'] == 'crusher':
+            # Pulsating moving cube
+            scale = 3.5 + 0.8 * math.sin(time.time() * 4)
+            draw_triangle_cube(obs['x'], 2.5, obs['z'], scale, COL_NEON_PINK)
+        
+        elif obs['type'] == 'hazard':
+            # Bouncing sphere
+            glPushMatrix()
+            glTranslatef(obs['x'], obs['y'], obs['z'])
+            scale = obs.get('scale', 1.0)
+            glScalef(scale, scale, scale)
+            draw_triangle_sphere(1.0, 12, 12, COL_NEON_PURPLE)
+            glPopMatrix()
+
+def draw_collectibles():
+    """Draw all power-up collectibles."""
+    for col in collectibles:
+        glPushMatrix()
+        glTranslatef(col['x'], col['y'], col['z'])
+        glRotatef(col['rot'], 0, 1, 0)
+        
+        # Pulsating scale
+        pulse = 1.0 + 0.2 * math.sin(col['rot'] * 0.05)
+        glScalef(pulse, pulse, pulse)
+        
+        # Determine color and shape based on type
+        if col['type'] == 'gem_green':
+            draw_triangle_sphere(0.6, 10, 10, COL_NEON_GREEN)
+        elif col['type'] == 'gem_blue':
+            draw_triangle_sphere(0.7, 10, 10, COL_NEON_BLUE)
+        elif col['type'] == 'gem_purple':
+            draw_triangle_sphere(0.8, 10, 10, COL_NEON_PURPLE)
+        elif col['type'] == 'gem_gold':
+            draw_triangle_sphere(1.0, 12, 12, COL_GOLD)
+        elif col['type'] == 'shield':
+            draw_triangle_sphere(0.8, 12, 12, COL_NEON_BLUE)
+        elif col['type'] == 'speed':
+            glRotatef(90, 1, 0, 0)
+            draw_triangle_cylinder(0.5, 0.5, 1.2, 10, COL_NEON_YELLOW)
+        elif col['type'] == 'grenade':
+            draw_triangle_cube(0, 0, 0, 0.8, COL_NEON_ORANGE)
+        
+        glPopMatrix()
+
+def draw_projectiles():
+    """Draw player projectiles."""
+    for proj in projectiles:
+        glPushMatrix()
+        glTranslatef(proj['x'], proj['y'], proj['z'])
+        
+        if proj['type'] == 'laser':
+            # Small yellow sphere with trail
+            draw_triangle_sphere(0.3, 8, 8, COL_NEON_YELLOW)
+            
+            # Trail effect
+            for i in range(1, 4):
+                glPushMatrix()
+                glTranslatef(0, 0, i * 0.5)
+                alpha = 1.0 - i * 0.25
+                trail_col = tuple(c * alpha for c in COL_NEON_YELLOW)
+                glScalef(0.8, 0.8, 0.8)
+                draw_triangle_sphere(0.3, 6, 6, trail_col)
+                glPopMatrix()
+        
+        elif proj['type'] == 'charge':
+            # Large pulsating pink sphere
+            pulse = 1.0 + 0.3 * math.sin(time.time() * 10)
+            glScalef(pulse, pulse, pulse)
+            draw_triangle_sphere(0.8, 12, 12, COL_NEON_PINK)
+        
+        elif proj['type'] == 'grenade':
+            # Rotating orange cube
+            glRotatef(proj.get('rot', 0), 1, 1, 0)
+            draw_triangle_cube(0, 0, 0, 0.6, COL_NEON_ORANGE)
+        
+        glPopMatrix()
+
+def draw_particles():
+    """Draw particle effects."""
+    for part in particles:
+        glPushMatrix()
+        glTranslatef(part['x'], part['y'], part['z'])
+        
+        # Fade based on remaining life
+        life_ratio = part['life'] / 1.0
+        size = life_ratio * 0.5
+        color = tuple(c * life_ratio for c in part['color'])
+        
+        draw_triangle_cube(0, 0, 0, size, color)
+        glPopMatrix()
+
+# =============================================================================
+# HUD RENDERING (2D OVERLAY)
+# =============================================================================
 
 def draw_hud():
-    """Draws 2D text overlay."""
-    global current_score, total_distance, player_health, player_grenades, game_state
+    """Draw heads-up display."""
+    global current_score, total_distance, player_health, player_grenades
+    global game_state, combo_multiplier, player_god_mode, current_speed
     
-    # Switch to Orthographic for HUD
+    # Switch to 2D orthographic projection
     glMatrixMode(GL_PROJECTION)
     glPushMatrix()
     glLoadIdentity()
-    # No gluOrtho2D allowed? 
-    # Wait, the list says "glMatrixMode" is allowed. 
-    # It does NOT explicitly say glOrtho is allowed.
-    # The user said strictly allowed. 
-    # I can simulate 2D by drawing at zNear.
-    # Or just use glutBitmapCharacter at raster position.
-    
-    # We will use RasterPos which works in Perspective too if positioned right,
-    # BUT standard approach is Identity Projection for 2D.
-    # User said "ONLY ALLOWED PyOpenGL Functions"... glOrtho is usually GL.
-    # Let's check the list provided in the prompt...
-    # It lists: glClear, glLoadIdentity, glViewport, glMatrixMode, glPushMatrix, glPopMatrix, glTranslatef, glRotatef, glScalef, glBegin, glEnd, glColor3f, glVertex3f, glVertex2f
-    # GL_POINTS, GL_LINES, GL_TRIANGLES
-    # glPointSize, glRasterPos2f
-    # glEnable, glDisable
-    # gluPerspective, gluLookAt
-    # glutInit...
-    # glutBitmapCharacter
-    
-    # It does NOT list glOrtho. So I cannot use it.
-    # I must render HUD using Identity Matrix in Projection.
-    
-    # Identity Project maps (-1, -1) to (1, 1) to the screen.
-    
-    # Reset Matrices
-    glLoadIdentity() # Projection Identity
+    # Map to -1 to 1 coordinates
     glMatrixMode(GL_MODELVIEW)
     glPushMatrix()
     glLoadIdentity()
     glDisable(GL_DEPTH_TEST)
     
-    def draw_string(x, y, text, color):
-        glColor3f(color[0], color[1], color[2])
+    def draw_text(x, y, text, color):
+        glColor3f(*color)
         glRasterPos2f(x, y)
         for char in text:
             glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
-
-    if game_state == "menu":
-        draw_string(-0.25, 0.2, "CYBER RUNNER 2077", COL_NEON_BLUE)
-        draw_string(-0.15, 0.0, "PRESS SPACE TO START", COL_WHITE)
-        draw_string(-0.5, -0.5, "CONTROLS: WASD to Move/Slide, SPACE to Jump, MOUSE to Shoot", COL_GRAY)
-        
-    elif game_state == "playing":
-        draw_string(-0.9, 0.9, f"SCORE: {int(current_score)}", COL_WHITE)
-        draw_string(-0.9, 0.82, f"DIST: {int(total_distance)}m", COL_WHITE)
-        
-        # Health Hearts
-        draw_string(-0.05, 0.9, "HP:", COL_WARNING)
-        for i in range(player_health):
-            draw_string(0.05 + i*0.05, 0.9, "<3", COL_WARNING)
-            
-        draw_string(0.7, 0.9, f"GRENADES: {player_grenades}", COL_NEON_PINK)
-        
-        if player_god_mode:
-            draw_string(0.0, -0.8, "[GOD MODE ACTIVE]", (1, 1, 0))
-            
-    elif game_state == "gameover":
-        draw_string(-0.1, 0.1, "GAME OVER", COL_WARNING)
-        draw_string(-0.15, -0.1, f"FINAL SCORE: {int(current_score)}", COL_WHITE)
-        draw_string(-0.2, -0.3, "PRESS 'R' TO RESTART", COL_GRAY)
     
-    # Restore
+    # MENU STATE
+    if game_state == "menu":
+        # Title
+        draw_text(-0.35, 0.3, "CYBER RUNNER 2077", COL_NEON_CYAN)
+        draw_text(-0.25, 0.15, "NEON HORIZON", COL_NEON_PINK)
+        
+        # Instructions
+        draw_text(-0.18, -0.1, "PRESS SPACE TO START", COL_WHITE)
+        draw_text(-0.6, -0.3, "WASD: Move/Slide  |  SPACE: Jump  |  MOUSE: Shoot  |  F/1/2/3: Camera", COL_GRAY)
+        draw_text(-0.4, -0.4, "C: God Mode  |  V: AI  |  B: Slow Motion  |  P: Pause", COL_GRAY)
+        
+        # Animated buttons (triangles)
+        pulse = 0.8 + 0.2 * math.sin(time.time() * 3)
+        glBegin(GL_TRIANGLES)
+        glColor3f(COL_NEON_GREEN[0] * pulse, COL_NEON_GREEN[1] * pulse, COL_NEON_GREEN[2] * pulse)
+        glVertex2f(-0.15, -0.55)
+        glVertex2f(0.15, -0.55)
+        glVertex2f(0.0, -0.65)
+        glEnd()
+    
+    # LOADING STATE
+    elif game_state == "loading":
+        countdown_text = str(int(loading_countdown) + 1) if loading_countdown > 0 else "GO!"
+        draw_text(-0.05, 0.1, countdown_text, COL_NEON_YELLOW)
+        draw_text(-0.1, -0.1, "GET READY...", COL_WHITE)
+    
+    # PLAYING STATE
+    elif game_state == "playing":
+        # Score (top-left)
+        draw_text(-0.95, 0.90, f"SCORE: {int(current_score)}", COL_WHITE)
+        
+        # Combo multiplier
+        if combo_multiplier > 1:
+            combo_text = f"x{combo_multiplier} COMBO!"
+            draw_text(-0.95, 0.82, combo_text, COL_GOLD)
+        
+        # Distance (top-left)
+        draw_text(-0.95, 0.74, f"DISTANCE: {int(total_distance)}m", COL_WHITE)
+        
+        # Health (top-center with hearts)
+        draw_text(-0.15, 0.90, "HP:", COL_WARNING)
+        for i in range(player_health):
+            # Use triangle-based hearts
+            heart_x = -0.05 + i * 0.15
+            heart_y = 0.92
+            glMatrixMode(GL_PROJECTION)
+            glPushMatrix()
+            glLoadIdentity()
+            glMatrixMode(GL_MODELVIEW)
+            glPushMatrix()
+            glLoadIdentity()
+            
+            # Draw heart using triangles
+            glBegin(GL_TRIANGLES)
+            glColor3f(*COL_WARNING)
+            x_base = heart_x
+            y_base = heart_y
+            
+            # Simple heart approximation
+            glVertex2f(x_base, y_base - 0.02)
+            glVertex2f(x_base - 0.03, y_base)
+            glVertex2f(x_base + 0.03, y_base)
+            
+            glVertex2f(x_base - 0.03, y_base)
+            glVertex2f(x_base - 0.04, y_base + 0.02)
+            glVertex2f(x_base - 0.02, y_base + 0.02)
+            
+            glVertex2f(x_base + 0.03, y_base)
+            glVertex2f(x_base + 0.02, y_base + 0.02)
+            glVertex2f(x_base + 0.04, y_base + 0.02)
+            glEnd()
+            
+            glPopMatrix()
+            glMatrixMode(GL_PROJECTION)
+            glPopMatrix()
+            glMatrixMode(GL_MODELVIEW)
+        
+        # Grenades (top-right)
+        draw_text(0.70, 0.90, f"GRENADES: {player_grenades}/{MAX_GRENADES}", COL_NEON_ORANGE)
+        
+        # Speed indicator (bottom-right bar)
+        speed_ratio = current_speed / MAX_SPEED
+        bar_width = speed_ratio * 0.3
+        bar_color = color_lerp(COL_NEON_GREEN, COL_WARNING, speed_ratio)
+        
+        glBegin(GL_TRIANGLES)
+        glColor3f(*bar_color)
+        glVertex2f(0.65, -0.90)
+        glVertex2f(0.65 + bar_width, -0.90)
+        glVertex2f(0.65 + bar_width, -0.85)
+        
+        glVertex2f(0.65, -0.90)
+        glVertex2f(0.65 + bar_width, -0.85)
+        glVertex2f(0.65, -0.85)
+        glEnd()
+        
+        draw_text(0.67, -0.93, f"SPEED: {int(speed_ratio * 100)}%", COL_WHITE)
+        
+        # God mode indicator
+        if player_god_mode:
+            draw_text(-0.15, -0.85, "[GOD MODE ACTIVE]", COL_GOLD)
+        
+        # Perfect dodge streak
+        if player_perfect_dodge_count >= 5:
+            draw_text(-0.2, -0.75, f"PERFECT DODGES: {player_perfect_dodge_count}", COL_NEON_CYAN)
+    
+    # PAUSED STATE
+    elif game_state == "paused":
+        # Darken screen
+        glBegin(GL_TRIANGLES)
+        glColor3f(0.0, 0.0, 0.0)
+        glVertex2f(-1, -1)
+        glVertex2f(1, -1)
+        glVertex2f(1, 1)
+        glVertex2f(-1, -1)
+        glVertex2f(1, 1)
+        glVertex2f(-1, 1)
+        glEnd()
+        
+        draw_text(-0.1, 0.1, "PAUSED", COL_NEON_CYAN)
+        draw_text(-0.2, -0.1, "P: Resume  |  R: Restart  |  Q: Quit", COL_WHITE)
+    
+    # GAME OVER STATE
+    elif game_state == "gameover":
+        draw_text(-0.15, 0.2, "GAME OVER", COL_WARNING)
+        draw_text(-0.25, 0.05, f"FINAL SCORE: {int(current_score)}", COL_WHITE)
+        draw_text(-0.25, -0.1, f"DISTANCE: {int(total_distance)}m", COL_WHITE)
+        draw_text(-0.3, -0.25, f"OBSTACLES DODGED: {stats_obstacles_dodged}", COL_NEON_CYAN)
+        draw_text(-0.25, -0.4, f"GEMS COLLECTED: {stats_gems_collected}", COL_GOLD)
+        draw_text(-0.25, -0.6, "PRESS R TO RESTART", COL_GRAY)
+    
+    # VICTORY STATE
+    elif game_state == "victory":
+        draw_text(-0.15, 0.3, "YOU WIN!", COL_GOLD)
+        draw_text(-0.3, 0.15, f"FINAL SCORE: {int(current_score)}", COL_WHITE)
+        draw_text(-0.25, 0.0, f"DISTANCE: {int(total_distance)}m", COL_WHITE)
+        draw_text(-0.25, -0.15, "PRESS R TO RESTART", COL_GRAY)
+        draw_text(-0.3, -0.3, "PRESS C TO CONTINUE", COL_NEON_GREEN)
+    
+    # Restore 3D projection
     glEnable(GL_DEPTH_TEST)
     glMatrixMode(GL_PROJECTION)
     glPopMatrix()
@@ -559,326 +1022,598 @@ def draw_hud():
     glPopMatrix()
 
 # =============================================================================
-# UPDATE & LOGIC FUNCTIONS
+# UPDATE LOGIC
 # =============================================================================
 
 def update_game():
-    """Main game loop update."""
+    """Main game update loop."""
     global last_time, game_state, current_speed, total_distance, current_score
+    global difficulty_level, last_speed_up_score, loading_countdown, obstacle_spawn_rate
+    global combo_multiplier, combo_last_collect_time, player_perfect_dodge_count
     
     current_time = time.time()
     dt = current_time - last_time
     last_time = current_time
     
-    # Cap DT to prevent physics glitching on lag
-    if dt > 0.1: dt = 0.1
+    # Cap delta time to prevent huge jumps
+    if dt > 0.1:
+        dt = 0.1
     
-    if game_state == "paused":
-        return
-        
-    if slow_motion:
+    # Apply slow motion cheat
+    if slow_motion and game_state == "playing":
         dt *= 0.5
-        
-    # Menu Animation Only
-    if game_state == "menu" or game_state == "gameover":
-        update_environment(dt * 10.0) # Slow scroll
+    
+    # LOADING STATE
+    if game_state == "loading":
+        loading_countdown -= dt
+        if loading_countdown <= 0:
+            game_state = "playing"
+            print("[START] Game Started!")
         return
-
-    # Game Progression
-    current_speed = min(MAX_SPEED, current_speed + dt * SPEED_INCREMENT)
-    distance_step = current_speed * dt
-    total_distance += distance_step
-    current_score += distance_step * 0.1
     
-    update_player(dt)
-    update_environment(distance_step)
-    update_obstacles(dt, distance_step)
-    update_collectibles(dt, distance_step)
-    update_projectiles(dt)
-    update_particles(dt)
+    # MENU/PAUSED/GAMEOVER - Only animate environment
+    if game_state in ["menu", "paused", "gameover", "victory"]:
+        update_environment(dt * 20.0)
+        update_floating_platforms(dt)
+        return
     
-    # Spawning Logic
-    if len(obstacles) < 5 and random.random() < 0.02:
-        spawn_obstacle()
+    # PLAYING STATE
+    if game_state == "playing":
+        # Speed progression
+        current_speed = min(MAX_SPEED, current_speed + dt * SPEED_INCREMENT)
+        distance_delta = current_speed * dt
+        total_distance += distance_delta
         
-    if len(collectibles) < 3 and random.random() < 0.01:
-        spawn_collectible()
+        # Score based on distance
+        score_delta = distance_delta * 0.1
+        if slow_motion:
+            score_delta *= 0.5
+        current_score += score_delta
         
-    if ai_auto_run:
-        update_ai()
+        # Difficulty scaling every 500 points
+        if int(current_score / 500) > int(last_speed_up_score / 500):
+            difficulty_level += 1
+            obstacle_spawn_rate = min(0.05, obstacle_spawn_rate + 0.005)
+            last_speed_up_score = current_score
+            print(f"[SPEED UP] Level {difficulty_level}! Speed: {int(current_speed)}")
         
-    check_collisions()
+        # Victory condition
+        if current_score >= VICTORY_SCORE and game_state == "playing":
+            game_state = "victory"
+            print("[VICTORY] You Win!")
+            return
+        
+        # Update game systems
+        update_player(dt)
+        update_environment(distance_delta)
+        update_obstacles(dt, distance_delta)
+        update_collectibles(dt, distance_delta)
+        update_projectiles(dt)
+        update_particles(dt)
+        update_floating_platforms(dt)
+        
+        # Spawning logic
+        if len(obstacles) < 5 and random.random() < obstacle_spawn_rate:
+            spawn_obstacle()
+        
+        if len(collectibles) < 3 and random.random() < 0.015:
+            spawn_collectible()
+        
+        # AI auto-runner
+        if ai_auto_run:
+            update_ai()
+        
+        # Collision detection
+        check_collisions()
+        
+        # Combo timeout
+        if time.time() - combo_last_collect_time > COMBO_TIMEOUT:
+            combo_multiplier = 1
 
 def update_player(dt):
-    global player_x, player_y, player_lane_index, player_velocity_y, player_is_jumping
-    global player_is_sliding, player_slide_timer, player_animation_phase
+    """Update player physics and animation."""
+    global player_x, player_y, player_lane_index, player_velocity_y
+    global player_is_jumping, player_is_sliding, player_slide_timer
+    global player_animation_phase, player_damage_flash
     
-    # Lane Interpolation
+    # Lane interpolation (smooth movement)
     target_x = (player_lane_index - 1) * LANE_WIDTH
-    diff = target_x - player_x
-    player_x += diff * 10.0 * dt
+    player_x += (target_x - player_x) * 12.0 * dt
     
-    # Jump Physics
+    # Jump physics
     if player_is_jumping:
         player_y += player_velocity_y * dt
         player_velocity_y += GRAVITY * dt
+        
         if player_y <= 0:
             player_y = 0
             player_is_jumping = False
             player_velocity_y = 0
-            
-    # Slide Logic
+    
+    # Slide timer
     if player_is_sliding:
         player_slide_timer -= dt
         if player_slide_timer <= 0:
             player_is_sliding = False
     
-    player_animation_phase += dt * 10.0
+    # Animation phase for running
+    player_animation_phase += dt * 12.0
+    
+    # Damage flash decay
+    if player_damage_flash > 0:
+        player_damage_flash -= dt * 3.0
+        player_damage_flash = max(0, player_damage_flash)
 
-def update_environment(dist_step):
+def update_environment(distance_delta):
+    """Update scrolling environment."""
     global environment_buildings
     
-    # Move Buildings +Z (towards player)
-    for b in environment_buildings:
-        b['z'] += dist_step
-        
-    # Remove buildings behind camera
-    environment_buildings = [b for b in environment_buildings if b['z'] < 50]
+    # Move buildings toward player
+    for building in environment_buildings:
+        building['z'] += distance_delta
     
-    # Spawn new buildings in distance (-500)
-    if len(environment_buildings) < 30:
+    # Remove buildings behind camera
+    environment_buildings = [b for b in environment_buildings if b['z'] < 100]
+    
+    # Spawn new buildings
+    while len(environment_buildings) < 40:
         spawn_building()
 
 def spawn_building(initial=False):
-    global environment_buildings
-    z_pos = random.uniform(-100, -500) if initial else -500 - random.uniform(0, 50)
-    x_pos = random.choice([-1, 1]) * random.uniform(40, 100)
+    """Spawn a background building."""
+    z_pos = random.uniform(-200, -800) if initial else random.uniform(-800, -900)
+    x_pos = random.choice([-1, 1]) * random.uniform(60, 150)
     
-    b = {
+    building = {
         'x': x_pos,
         'z': z_pos,
-        'width': random.uniform(10, 30),
-        'height': random.uniform(20, 80),
-        'color': (0.1, 0.1, random.uniform(0.2, 0.4))
+        'width': random.uniform(15, 40),
+        'height': random.uniform(30, 120),
+        'color': (0.1, 0.1, random.uniform(0.2, 0.5))
     }
-    environment_buildings.append(b)
+    environment_buildings.append(building)
 
-def update_obstacles(dt, dist_step):
-    global obstacles
-    for o in obstacles:
-        o['z'] += dist_step
+def update_floating_platforms(dt):
+    """Update floating platforms."""
+    global floating_platforms
+    
+    for platform in floating_platforms:
+        platform['rot'] += 30 * dt
+    
+    # Keep count stable
+    if len(floating_platforms) < 20:
+        spawn_floating_platform()
+
+def spawn_floating_platform(initial=False):
+    """Spawn a floating platform."""
+    z_pos = random.uniform(-200, -600) if initial else random.uniform(-600, -700)
+    
+    platform = {
+        'x': random.uniform(-80, 80),
+        'y': random.uniform(15, 40),
+        'z': z_pos,
+        'size': random.uniform(2, 5),
+        'rot': random.uniform(0, 360),
+        'color': (random.uniform(0.2, 0.4), random.uniform(0.2, 0.4), random.uniform(0.4, 0.6))
+    }
+    floating_platforms.append(platform)
+
+def update_obstacles(dt, distance_delta):
+    """Update all obstacles."""
+    global obstacles, stats_obstacles_dodged, player_perfect_dodge_count
+    
+    for obs in obstacles[:]:
+        # Move toward player
+        obs['z'] += distance_delta
         
-        # Crusher Movement
-        if o['type'] == 'crusher':
-            o['x'] += o['dir'] * 15.0 * dt
-            if abs(o['x']) > 15:
-                o['dir'] *= -1
-                
-    obstacles = [o for o in obstacles if o['z'] < 10]
+        # Type-specific updates
+        if obs['type'] == 'spike':
+            obs['rot'] = obs.get('rot', 0) + 45 * dt
+        
+        elif obs['type'] == 'beam':
+            obs['rot'] = obs.get('rot', 0) + 90 * dt
+        
+        elif obs['type'] == 'crusher':
+            # Move left-right
+            obs['x'] += obs['dir'] * 18.0 * dt
+            if abs(obs['x']) > LANE_WIDTH * 1.5:
+                obs['dir'] *= -1
+        
+        elif obs['type'] == 'hazard':
+            # Bouncing motion
+            obs['y'] = 2.0 + 1.5 * abs(math.sin(time.time() * 2 + obs.get('phase', 0)))
+            obs['scale'] = 0.8 + 0.4 * math.sin(time.time() * 3)
+        
+        # Remove if behind player
+        if obs['z'] > 10:
+            obstacles.remove(obs)
+            stats_obstacles_dodged += 1
+            player_perfect_dodge_count += 1
 
 def spawn_obstacle():
-    global obstacles
+    """Spawn a random obstacle."""
     lane = random.randint(0, 2)
     x = (lane - 1) * LANE_WIDTH
-    z = -500
+    z = -600
     
-    # Types based on distance
-    valid_types = ['barrier']
-    if total_distance > 500: valid_types.append('spike')
-    if total_distance > 1000: valid_types.append('beam')
-    if total_distance > 1500: valid_types.append('crusher')
+    # Available types based on difficulty
+    types = ['barrier']
+    if total_distance > 500:
+        types.append('spike')
+    if total_distance > 1000:
+        types.extend(['beam', 'hazard'])
+    if total_distance > 1500:
+        types.append('crusher')
     
-    t = random.choice(valid_types)
+    obs_type = random.choice(types)
     
     obs = {
-        'type': t,
+        'type': obs_type,
         'x': x,
         'y': 0,
         'z': z,
-        'hp': 3 if t == 'barrier' else 1,
-        'dir': 1 # For crusher
+        'hp': 3 if obs_type == 'barrier' else 1,
+        'dir': random.choice([-1, 1]),  # For crusher
+        'rot': random.uniform(0, 360),  # For rotation
+        'phase': random.uniform(0, 6.28)  # For bouncing
     }
     obstacles.append(obs)
 
-def update_collectibles(dt, dist_step):
-    global collectibles
-    for c in collectibles:
-        c['z'] += dist_step
-        c['rot'] += 90 * dt
-    
-    collectibles = [c for c in collectibles if c['z'] < 10]
+def update_collectibles(dt, distance_delta):
+    """Update power-ups."""
+    for col in collectibles[:]:
+        col['z'] += distance_delta
+        col['rot'] += 120 * dt
+        
+        # Remove if behind
+        if col['z'] > 10:
+            collectibles.remove(col)
 
 def spawn_collectible():
-    global collectibles
+    """Spawn a random power-up."""
     lane = random.randint(0, 2)
     x = (lane - 1) * LANE_WIDTH
-    z = -500
+    z = -600
+    y = 2.5
     
+    # Weighted random selection
     r = random.random()
-    if r < 0.6: t = 'gem'
-    elif r < 0.8: t = 'shield'
-    else: t = 'grenade'
+    if r < 0.3:
+        col_type = 'gem_green'
+    elif r < 0.5:
+        col_type = 'gem_blue'
+    elif r < 0.65:
+        col_type = 'gem_purple'
+    elif r < 0.75:
+        col_type = 'gem_gold'
+    elif r < 0.85:
+        col_type = 'shield'
+    elif r < 0.92:
+        col_type = 'speed'
+    else:
+        col_type = 'grenade'
     
     col = {
-        'type': t,
+        'type': col_type,
         'x': x,
-        'y': 2.5,
+        'y': y,
         'z': z,
         'rot': 0
     }
     collectibles.append(col)
 
 def update_projectiles(dt):
-    global projectiles
-    for p in projectiles:
-        # Move -Z (Away from player)
-        p['z'] -= 150.0 * dt
-        p['life'] -= dt
+    """Update player projectiles."""
+    for proj in projectiles[:]:
+        # Move forward (away from player)
+        proj['z'] -= 180.0 * dt
+        proj['life'] -= dt
         
-        if p['type'] == 'grenade':
-            p['y'] += p['vy'] * dt
-            p['vy'] += GRAVITY * dt # Gravity arc
+        # Grenade physics
+        if proj['type'] == 'grenade':
+            proj['y'] += proj['vy'] * dt
+            proj['vy'] += GRAVITY * dt
+            proj['rot'] = proj.get('rot', 0) + 360 * dt
             
-    projectiles = [p for p in projectiles if p['life'] > 0]
+            # Explode on ground
+            if proj['y'] <= 0:
+                spawn_explosion(proj['x'], 0, proj['z'], COL_NEON_ORANGE, 15)
+                projectiles.remove(proj)
+                continue
+        
+        # Remove if expired
+        if proj['life'] <= 0 or proj['z'] < -700:
+            if proj in projectiles:
+                projectiles.remove(proj)
 
 def update_particles(dt):
-    global particles
-    for p in particles:
-        p['x'] += p['vx'] * dt
-        p['y'] += p['vy'] * dt
-        p['z'] += p['vz'] * dt
-        p['vy'] += GRAVITY * dt
-        p['life'] -= dt
+    """Update particle effects."""
+    for part in particles[:]:
+        part['x'] += part['vx'] * dt
+        part['y'] += part['vy'] * dt
+        part['z'] += part['vz'] * dt
+        part['vy'] += GRAVITY * dt * 0.5  # Lighter gravity
+        part['life'] -= dt
         
-    particles = [p for p in particles if p['life'] > 0]
+        if part['life'] <= 0:
+            particles.remove(part)
 
-def spawn_explosion(x, y, z, color):
-    global particles
-    for i in range(15):
-        p = {
-            'x': x, 'y': y, 'z': z,
-            'vx': random.uniform(-10, 10),
-            'vy': random.uniform(5, 20),
-            'vz': random.uniform(-10, 10),
-            'life': 1.0,
+def spawn_explosion(x, y, z, color, count=10):
+    """Create explosion particle effect."""
+    for i in range(count):
+        part = {
+            'x': x,
+            'y': y,
+            'z': z,
+            'vx': random.uniform(-15, 15),
+            'vy': random.uniform(10, 25),
+            'vz': random.uniform(-15, 15),
+            'life': random.uniform(0.5, 1.2),
             'color': color
         }
-        particles.append(p)
+        particles.append(part)
 
 def update_ai():
-    global player_lane_index, player_is_jumping
-    # Find nearest threat in my lane
-    nearest_dist = 9999
+    """Simple AI for auto-runner cheat."""
+    global player_lane_index, player_is_jumping, player_velocity_y, player_is_sliding, player_slide_timer
+    
+    # Find nearest obstacle in current lane
+    my_x = (player_lane_index - 1) * LANE_WIDTH
+    nearest_dist = 999
     threat = None
     
-    my_x = (player_lane_index - 1) * LANE_WIDTH
-    
-    for o in obstacles:
-        # Check if in front of me
-        if o['z'] < player_z and o['z'] > -100:
-            # Check if in my lane (approximate)
-            if abs(o['x'] - my_x) < 5:
-                dist = abs(o['z'] - player_z)
+    for obs in obstacles:
+        if obs['z'] < 0 and obs['z'] > -150:
+            if abs(obs['x'] - my_x) < 6:
+                dist = abs(obs['z'])
                 if dist < nearest_dist:
                     nearest_dist = dist
-                    threat = o
-                    
-    if threat and nearest_dist < 40:
-        # Dodge
-        if threat['type'] == 'spike' or threat['type'] == 'beam':
-             if not player_is_jumping:
-                 player_is_jumping = True
-                 global player_velocity_y; player_velocity_y = JUMP_FORCE
+                    threat = obs
+    
+    # React to threat
+    if threat and nearest_dist < 50:
+        if threat['type'] in ['spike', 'hazard']:
+            # Jump over
+            if not player_is_jumping and player_y == 0:
+                player_is_jumping = True
+                player_velocity_y = JUMP_FORCE
+        elif threat['type'] == 'beam':
+            # Slide under
+            if not player_is_sliding:
+                player_is_sliding = True
+                player_slide_timer = 1.0
         else:
-             # Move lane
-             if player_lane_index == 1: player_lane_index = 0
-             else: player_lane_index = 1
-
-def check_collisions():
-    global player_health, game_state, player_has_shield, current_score, player_grenades
-    global obstacles, collectibles, projectiles
-    
-    # 1. Player vs Obstacles
-    p_box = {'x': player_x, 'z': player_z, 'w': 3.0}
-    
-    for o in obstacles[:]:
-        dx = abs(o['x'] - p_box['x'])
-        dz = abs(o['z'] - p_box['z'])
-        
-        collision = False
-        if dx < 4.0 and dz < 4.0:
-            # Specific checks
-            if o['type'] == 'spike' and player_y > 2.0: collision = False
-            elif o['type'] == 'beam' and player_is_sliding: collision = False
-            else: collision = True
+            # Change lane
+            safe_lanes = [0, 1, 2]
+            for obs in obstacles:
+                if obs['z'] < 0 and obs['z'] > -100:
+                    obs_lane = round((obs['x'] / LANE_WIDTH) + 1)
+                    if obs_lane in safe_lanes:
+                        safe_lanes.remove(obs_lane)
             
-        if collision:
-            if player_god_mode:
-                continue
-            elif player_has_shield:
-                player_has_shield = False
-                obstacles.remove(o)
-                spawn_explosion(o['x'], o['y'], o['z'], COL_NEON_GREEN)
-            else:
-                player_health -= 1
-                obstacles.remove(o)
-                spawn_explosion(player_x, player_y, player_z, COL_WARNING)
-                if player_health <= 0:
-                    game_state = "gameover"
-
-    # 2. Projectiles vs Obstacles
-    for p in projectiles[:]:
-        for o in obstacles[:]:
-            dist = math.sqrt((p['x']-o['x'])**2 + (p['z']-o['z'])**2)
-            if dist < 5.0:
-                damage = 10 if p['type'] == 'charge' else 1
-                o['hp'] -= damage
-                
-                if p['type'] != 'charge' and p in projectiles:
-                    projectiles.remove(p)
-                
-                if o['hp'] <= 0:
-                    if o in obstacles: obstacles.remove(o)
-                    current_score += 50
-                    spawn_explosion(o['x'], o['y'], o['z'], COL_NEON_PINK)
+            if safe_lanes and player_lane_index not in safe_lanes:
+                player_lane_index = random.choice(safe_lanes)
+    
+    # Collect power-ups
+    for col in collectibles:
+        if col['z'] < 0 and col['z'] > -100:
+            col_lane = round((col['x'] / LANE_WIDTH) + 1)
+            if col_lane != player_lane_index and abs(col['z']) > 30:
+                player_lane_index = col_lane
                 break
 
-    # 3. Player vs Collectibles
-    for c in collectibles[:]:
-        dist = math.sqrt((c['x']-player_x)**2 + (c['z']-player_z)**2)
-        if dist < 4.0:
-            collectibles.remove(c)
-            if c['type'] == 'gem': current_score += 100
-            elif c['type'] == 'shield': player_has_shield = True
-            elif c['type'] == 'grenade': player_grenades += 2
+def check_collisions():
+    """Check all collision interactions."""
+    global player_health, game_state, player_has_shield, current_score
+    global player_grenades, combo_multiplier, combo_last_collect_time
+    global stats_gems_collected, player_damage_flash, obstacles
+    global collectibles, projectiles, player_perfect_dodge_count
+    
+    # Player bounding box
+    player_box = {
+        'x': player_x,
+        'y': player_y,
+        'z': player_z,
+        'radius': 1.5
+    }
+    
+    # 1. PLAYER vs OBSTACLES
+    for obs in obstacles[:]:
+        dx = abs(obs['x'] - player_box['x'])
+        dz = abs(obs['z'] - player_box['z'])
+        
+        if dx < 3.0 and dz < 3.0:
+            # Specific collision rules
+            collision = True
+            
+            # General jump check - if player is high enough, they clear most obstacles
+            if player_y > 4.0 and obs['type'] != 'beam':
+                collision = False  # Jumped over
+            elif obs['type'] == 'spike' and player_y > 3.0:
+                collision = False  # Lower jump can clear spikes
+            elif obs['type'] == 'beam' and player_is_sliding:
+                collision = False  # Slid under beam
+            elif obs['type'] == 'hazard':
+                dy = abs(obs.get('y', 2.0) - player_y)
+                if dy > 2.0:
+                    collision = False
+            
+            if collision:
+                if player_god_mode:
+                    # God mode: destroy obstacle
+                    obstacles.remove(obs)
+                    spawn_explosion(obs['x'], 2, obs['z'], COL_GOLD, 12)
+                    current_score += 50
+                elif player_has_shield:
+                    # Shield absorbs hit
+                    player_has_shield = False
+                    obstacles.remove(obs)
+                    spawn_explosion(obs['x'], 2, obs['z'], COL_NEON_GREEN, 12)
+                    print("[SHIELD] Shield absorbed damage!")
+                else:
+                    # Take damage
+                    player_health -= 1
+                    player_damage_flash = 1.0
+                    player_perfect_dodge_count = 0
+                    obstacles.remove(obs)
+                    spawn_explosion(player_x, player_y + 1, player_z, COL_WARNING, 15)
+                    print(f"[HIT] Health: {player_health}/3")
+                    
+                    if player_health <= 0:
+                        game_state = "gameover"
+                        print("[GAME OVER]")
+                        return
+    
+    # 2. PROJECTILES vs OBSTACLES
+    for proj in projectiles[:]:
+        for obs in obstacles[:]:
+            dist = distance_3d(proj['x'], proj['y'], proj['z'], 
+                              obs['x'], obs.get('y', 2), obs['z'])
+            
+            if dist < 4.0:
+                # Determine damage
+                if proj['type'] == 'charge':
+                    damage = 10  # One-shot kill
+                elif proj['type'] == 'grenade':
+                    damage = 5
+                else:
+                    damage = 1
+                
+                obs['hp'] -= damage
+                
+                # Remove projectile (except charge shot persists)
+                if proj['type'] != 'charge' and proj in projectiles:
+                    projectiles.remove(proj)
+                
+                # Destroy obstacle if health depleted
+                if obs['hp'] <= 0:
+                    if obs in obstacles:
+                        obstacles.remove(obs)
+                    current_score += 20 if obs['type'] == 'barrier' else 15
+                    spawn_explosion(obs['x'], 2, obs['z'], COL_NEON_PINK, 10)
+                    print(f"[DESTROYED] +{20 if obs['type'] == 'barrier' else 15} points")
+                
+                break
+    
+    # 3. PLAYER vs COLLECTIBLES
+    for col in collectibles[:]:
+        dist = distance_3d(player_x, player_y, player_z, 
+                          col['x'], col['y'], col['z'])
+        
+        if dist < 2.5:
+            collectibles.remove(col)
+            stats_gems_collected += 1
+            
+            # Apply effects
+            if col['type'] == 'gem_green':
+                current_score += 10 * combo_multiplier
+                update_combo()
+            elif col['type'] == 'gem_blue':
+                current_score += 25 * combo_multiplier
+                update_combo()
+            elif col['type'] == 'gem_purple':
+                current_score += 50 * combo_multiplier
+                update_combo()
+            elif col['type'] == 'gem_gold':
+                current_score += 100 * combo_multiplier
+                update_combo()
+            elif col['type'] == 'shield':
+                player_has_shield = True
+                print("[POWER-UP] Shield activated!")
+            elif col['type'] == 'speed':
+                # Speed boost (temporary)
+                global current_speed
+                current_speed = min(MAX_SPEED, current_speed * 1.5)
+                print("[POWER-UP] Speed boost!")
+            elif col['type'] == 'grenade':
+                player_grenades = min(MAX_GRENADES, player_grenades + 3)
+                print(f"[POWER-UP] +3 Grenades ({player_grenades}/5)")
+            
+            # Visual feedback
+            spawn_explosion(col['x'], col['y'], col['z'], COL_GOLD, 8)
+    
+    # 4. PERFECT DODGE BONUS
+    if player_perfect_dodge_count >= 10:
+        current_score += 100
+        print("[BONUS] Perfect Dodge +100 points!")
+        player_perfect_dodge_count = 0
+
+def update_combo():
+    """Update combo system."""
+    global combo_multiplier, combo_last_collect_time
+    
+    time_since_last = time.time() - combo_last_collect_time
+    
+    if time_since_last < COMBO_TIMEOUT:
+        if combo_multiplier == 1:
+            combo_multiplier = 2
+        elif combo_multiplier == 2:
+            combo_multiplier = 3
+        elif combo_multiplier == 3:
+            combo_multiplier = 5
+        print(f"[COMBO] x{combo_multiplier}")
+    else:
+        combo_multiplier = 1
+    
+    combo_last_collect_time = time.time()
 
 # =============================================================================
 # INPUT CALLBACKS
 # =============================================================================
 
 def handle_keyboard(key, x, y):
-    global player_lane_index, player_is_jumping, player_velocity_y, player_is_sliding
-    global player_slide_timer, game_state, player_god_mode, ai_auto_run, slow_motion
-    global camera_mode
+    """Handle keyboard input."""
+    global player_lane_index, player_is_jumping, player_velocity_y
+    global player_is_sliding, player_slide_timer, game_state
+    global player_god_mode, ai_auto_run, slow_motion, camera_mode
+    global loading_countdown
     
     k = key.lower()
     
-    if k == b'\x1b': # ESC
+    # ESC - Quit
+    if k == b'\x1b':
         sys.exit(0)
-        
-    if game_state == "menu" or game_state == "gameover":
-        if k == b' ' or k == b'r':
-            init_game()
-            game_state = "playing"
+    
+    # MENU STATE
+    if game_state == "menu":
+        if k == b' ':
+            game_state = "loading"
+            loading_countdown = 3.0
+            print("[LOADING] Get ready...")
         return
-        
+    
+    # GAME OVER / VICTORY STATE
+    if game_state in ["gameover", "victory"]:
+        if k == b'r':
+            init_game()
+            game_state = "loading"
+            loading_countdown = 3.0
+            print("[RESTART] Restarting game...")
+        elif k == b'c' and game_state == "victory":
+            game_state = "playing"
+            print("[CONTINUE] Continuing after victory...")
+        elif k == b'q' or k == b'm':
+            init_game()
+        return
+    
+    # PAUSED STATE
+    if game_state == "paused":
+        if k == b'p' or k == b'r':
+            game_state = "playing"
+            print("[RESUME] Game resumed")
+        elif k == b'q':
+            init_game()
+        return
+    
+    # PLAYING STATE
     if game_state == "playing":
+        # Movement
         if k == b'a' and player_lane_index > 0:
             player_lane_index -= 1
         elif k == b'd' and player_lane_index < 2:
             player_lane_index += 1
         elif k == b' ':
-            if not player_is_jumping:
+            if not player_is_jumping and player_y == 0:
                 player_is_jumping = True
                 player_velocity_y = JUMP_FORCE
         elif k == b's':
@@ -887,192 +1622,269 @@ def handle_keyboard(key, x, y):
                 player_slide_timer = 1.0
         elif k == b'w':
             player_is_sliding = False
+        
+        # Game control
         elif k == b'p':
             game_state = "paused"
-            
-        # Cheats / Tools
+            print("[PAUSE] Game paused")
+        elif k == b'r':
+            init_game()
+            game_state = "loading"
+            loading_countdown = 3.0
+        
+        # Camera modes
+        elif k == b'f':
+            camera_mode = "first" if camera_mode != "first" else "third"
+            print(f"[CAMERA] {camera_mode.upper()} person view")
+        elif k == b'1':
+            camera_mode = "side"
+            print("[CAMERA] Side view")
+        elif k == b'2':
+            camera_mode = "top"
+            print("[CAMERA] Top-down view")
+        elif k == b'3':
+            camera_mode = "cinematic"
+            print("[CAMERA] Cinematic view")
+        
+        # Cheats
         elif k == b'c':
             player_god_mode = not player_god_mode
-            print(f"God Mode: {player_god_mode}")
+            print(f"[CHEAT] God Mode: {'ON' if player_god_mode else 'OFF'}")
         elif k == b'v':
             ai_auto_run = not ai_auto_run
-            print(f"AI Auto Run: {ai_auto_run}")
+            print(f"[CHEAT] Auto-Runner AI: {'ON' if ai_auto_run else 'OFF'}")
         elif k == b'b':
             slow_motion = not slow_motion
-        elif k == b'f':
-            if camera_mode == "third": camera_mode = "first"
-            else: camera_mode = "third"
-            
-    elif game_state == "paused":
-        if k == b'p':
-            game_state = "playing"
+            print(f"[CHEAT] Slow Motion: {'ON' if slow_motion else 'OFF'}")
+
+def handle_special_keys(key, x, y):
+    """Handle special keys (arrow keys)."""
+    global camera_offset_y, camera_rotation
+    
+    if game_state == "playing":
+        if key == GLUT_KEY_UP:
+            camera_offset_y += 2.0
+        elif key == GLUT_KEY_DOWN:
+            camera_offset_y -= 2.0
+        elif key == GLUT_KEY_LEFT:
+            camera_rotation += 10.0
+        elif key == GLUT_KEY_RIGHT:
+            camera_rotation -= 10.0
 
 def handle_mouse(button, state, x, y):
+    """Handle mouse input."""
     global player_charging, player_charge_start_time, projectiles, player_grenades
     
-    if game_state != "playing": return
+    if game_state != "playing":
+        return
     
+    # Left click - Laser/Charge shot
     if button == GLUT_LEFT_BUTTON:
         if state == GLUT_DOWN:
             player_charging = True
             player_charge_start_time = time.time()
         elif state == GLUT_UP:
             player_charging = False
-            duration = time.time() - player_charge_start_time
-            p_type = 'charge' if duration > 1.0 else 'laser'
+            charge_duration = time.time() - player_charge_start_time
             
-            p = {
-                'type': p_type,
-                'x': player_x, 
+            # Determine projectile type
+            if charge_duration > 1.0:
+                proj_type = 'charge'
+                print("[WEAPON] Charge shot!")
+            else:
+                proj_type = 'laser'
+            
+            # Create projectile
+            proj = {
+                'type': proj_type,
+                'x': player_x + 0.8,
                 'y': player_y + 1.5,
-                'z': player_z - 1.0,
-                'life': 3.0
+                'z': player_z - 2.0,
+                'life': 4.0,
+                'vy': 0
             }
-            projectiles.append(p)
-            
+            projectiles.append(proj)
+    
+    # Right click - Grenade
     elif button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN:
-        if player_grenades > 0:
-            player_grenades -= 1
-            p = {
+        if player_grenades > 0 or player_god_mode:
+            if not player_god_mode:
+                player_grenades -= 1
+            
+            proj = {
                 'type': 'grenade',
                 'x': player_x,
                 'y': player_y + 2.0,
-                'z': player_z,
-                'vy': 15.0,
-                'life': 3.0
+                'z': player_z - 1.0,
+                'vy': 18.0,
+                'life': 5.0,
+                'rot': 0
             }
-            projectiles.append(p)
-
-def handle_special_key(key, x, y):
-    # Optional arrow key support
-    pass
+            projectiles.append(proj)
+            print(f"[WEAPON] Grenade launched! ({player_grenades} remaining)")
 
 # =============================================================================
-# GLUT RENDERING CALLBACKS
+# RENDERING & CAMERA
 # =============================================================================
+
+def setup_camera():
+    """Setup camera based on current mode."""
+    global camera_mode, player_x, player_y, camera_offset_y
+    global camera_rotation, camera_cinematic_angle
+    
+    if game_state == "menu":
+        # Orbiting camera for menu
+        t = time.time() * 0.3
+        cam_x = 100 * math.sin(t)
+        cam_y = 50
+        cam_z = 100 * math.cos(t)
+        gluLookAt(cam_x, cam_y, cam_z, 0, 0, -300, 0, 1, 0)
+    
+    elif game_state == "loading":
+        # Static dramatic angle
+        gluLookAt(0, 30, 40, 0, 5, -50, 0, 1, 0)
+    
+    elif game_state in ["playing", "paused"]:
+        if camera_mode == "third":
+            # Third-person chase camera
+            cam_x = player_x * 0.7
+            cam_y = 20.0 + camera_offset_y
+            cam_z = player_z + 35.0
+            
+            # Apply rotation
+            if camera_rotation != 0:
+                angle = math.radians(camera_rotation)
+                radius = 35.0
+                cam_x += radius * math.sin(angle)
+                cam_z += radius * (1 - math.cos(angle))
+            
+            look_x = player_x
+            look_y = player_y + 3.0
+            look_z = player_z - 30.0
+            
+            gluLookAt(cam_x, cam_y, cam_z, look_x, look_y, look_z, 0, 1, 0)
+        
+        elif camera_mode == "first":
+            # First-person cockpit view
+            gluLookAt(player_x, player_y + 1.8, player_z - 0.5,
+                     player_x, player_y + 1.8, -500,
+                     0, 1, 0)
+        
+        elif camera_mode == "side":
+            # Side view (platform game style)
+            gluLookAt(40, 15, player_z,
+                     player_x, player_y + 2, player_z - 20,
+                     0, 1, 0)
+        
+        elif camera_mode == "top":
+            # Top-down view
+            gluLookAt(player_x, 60, player_z + 10,
+                     player_x, 0, player_z - 30,
+                     0, 0, -1)
+        
+        elif camera_mode == "cinematic":
+            # Orbiting cinematic camera
+            camera_cinematic_angle += 0.01
+            radius = 30.0
+            cam_x = player_x + radius * math.sin(camera_cinematic_angle)
+            cam_z = player_z + radius * math.cos(camera_cinematic_angle)
+            cam_y = 25.0
+            
+            gluLookAt(cam_x, cam_y, cam_z,
+                     player_x, player_y + 2, player_z - 20,
+                     0, 1, 0)
+    
+    elif game_state in ["gameover", "victory"]:
+        # Elevated dramatic angle
+        gluLookAt(0, 40, 60, 0, 5, -50, 0, 1, 0)
 
 def display():
+    """Main display callback."""
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     glLoadIdentity()
     
-    # Camera Positioning
-    if game_state == "menu":
-        # Orbit camera
-        t = time.time() * 0.2
-        gluLookAt(80 * math.sin(t), 40, 80 * math.cos(t), 0, 0, -200, 0, 1, 0)
+    # Setup camera
+    setup_camera()
     
-    elif game_state == "playing" or game_state == "paused":
-        # Check Camera Mode
-        if camera_mode == "third":
-            # Follow player with lag
-            cam_x = player_x * 0.8  
-            cam_y = 15.0
-            cam_z = 30.0
-            look_x = player_x
-            look_y = 5.0
-            look_z = -50.0
-            gluLookAt(cam_x, cam_y, cam_z, look_x, look_y, look_z, 0, 1, 0)
-            
-        elif camera_mode == "first":
-            # Inside Head
-            gluLookAt(player_x, player_y + 2.0, -1.0, player_x, player_y + 2.0, -100.0, 0, 1, 0)
-            
-    elif game_state == "gameover":
-         gluLookAt(0, 50, 50, 0, 0, -50, 0, 1, 0)
-
-    # DRAW SCENE
+    # Render scene
     draw_environment()
     
     if game_state != "menu":
         draw_robot_player()
-        
-    # Draw Obstacles
-    for o in obstacles:
-        if o['type'] == 'barrier':
-             draw_cube_manual(o['x'], 2, o['z'], 4, (0.8, 0, 0))
-        elif o['type'] == 'spike':
-             glPushMatrix()
-             glTranslatef(o['x'], 0, o['z'])
-             glRotatef(-90, 1, 0, 0)
-             draw_cylinder_manual(1.0, 0.0, 3.0, 8, (1, 0.5, 0)) # Cone spike
-             glPopMatrix()
-        elif o['type'] == 'beam':
-             glPushMatrix()
-             glTranslatef(o['x'], 1.0, o['z'])
-             glRotatef(90, 0, 1, 0) # Horizontal cylinder
-             draw_cylinder_manual(1.0, 1.0, 14.0, 8, (0.5, 0.5, 0.5))
-             glPopMatrix()
-        elif o['type'] == 'crusher':
-             scale = 3.0 + 0.5 * math.sin(time.time()*5)
-             draw_cube_manual(o['x'], 2, o['z'], scale, COL_NEON_PINK)
-             
-    # Draw Collectibles
-    for c in collectibles:
-        glPushMatrix()
-        glTranslatef(c['x'], c['y'], c['z'])
-        glRotatef(c['rot'], 0, 1, 0)
-        
-        col = COL_NEON_GREEN
-        if c['type'] == 'gem': col = (1,1,0)
-        elif c['type'] == 'shield': col = COL_NEON_BLUE
-        elif c['type'] == 'grenade': col = COL_WARNING
-        
-        draw_cube_manual(0, 0, 0, 1.5, col, wireframe=True)
-        glPopMatrix()
-        
-    # Draw Projectiles
-    for p in projectiles:
-        col = COL_NEON_PINK if p['type'] == 'charge' else (1,1,0)
-        glPushMatrix()
-        glTranslatef(p['x'], p['y'], p['z'])
-        draw_sphere_manual(0.5, 8, 8, col)
-        glPopMatrix()
-        
-    # Draw Particles
-    for p in particles:
-        glPushMatrix()
-        glTranslatef(p['x'], p['y'], p['z'])
-        s = p['life']
-        glScalef(s, s, s)
-        draw_cube_manual(0,0,0, 0.5, p['color'])
-        glPopMatrix()
-
+    
+    draw_obstacles()
+    draw_collectibles()
+    draw_projectiles()
+    draw_particles()
+    
+    # Draw HUD (2D overlay)
     draw_hud()
+    
     glutSwapBuffers()
 
 def idle():
+    """Idle callback for continuous updates."""
     update_game()
     glutPostRedisplay()
+
+def reshape(width, height):
+    """Handle window reshape."""
+    if height == 0:
+        height = 1
+    
+    glViewport(0, 0, width, height)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(60.0, float(width) / float(height), 0.1, 1000.0)
+    glMatrixMode(GL_MODELVIEW)
 
 # =============================================================================
 # MAIN FUNCTION
 # =============================================================================
 
 def main():
+    """Initialize and run the game."""
+    # Initialize GLUT
     glutInit()
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
     glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
+    glutInitWindowPosition(100, 100)
     glutCreateWindow(WINDOW_TITLE)
     
-    # GL Settings
-    glClearColor(0.02, 0.02, 0.05, 1.0)
+    # OpenGL settings
+    glClearColor(*COL_DARK_VOID, 1.0)
     glEnable(GL_DEPTH_TEST)
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
-    gluPerspective(60.0, float(WINDOW_WIDTH)/float(WINDOW_HEIGHT), 0.1, 800.0)
+    gluPerspective(60.0, float(WINDOW_WIDTH) / float(WINDOW_HEIGHT), 0.1, 1000.0)
     glMatrixMode(GL_MODELVIEW)
     
-    # Init Game Data
+    # Initialize game data
     init_game()
     
-    # Register Callbacks
+    # Register callbacks
     glutDisplayFunc(display)
     glutIdleFunc(idle)
+    glutReshapeFunc(reshape)
     glutKeyboardFunc(handle_keyboard)
+    glutSpecialFunc(handle_special_keys)
     glutMouseFunc(handle_mouse)
-    glutSpecialFunc(handle_special_key) # Optional
     
-    print("Starting Main Loop...")
+    # Start
+    print("=" * 60)
+    print("CYBER RUNNER 2077: NEON HORIZON")
+    print("=" * 60)
+    print("Controls:")
+    print("  W/A/S/D - Move and Slide")
+    print("  SPACE   - Jump")
+    print("  MOUSE L - Shoot (Hold for charge)")
+    print("  MOUSE R - Grenade")
+    print("  F/1/2/3 - Camera modes")
+    print("  P       - Pause")
+    print("  C/V/B   - Cheats (God/AI/Slow-Mo)")
+    print("=" * 60)
+    print("\nStarting game loop...")
+    
     glutMainLoop()
 
 if __name__ == "__main__":
