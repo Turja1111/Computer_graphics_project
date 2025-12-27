@@ -1,5 +1,5 @@
 """
-CYBER RUNNER 2077 - NEON HORIZON
+CYBER RUNNER 2077 - NEON HORIZON (FIXED VERSION)
 Course: CSE423 Computer Graphics via OpenGL
 Implementation: Functional Programming (No Classes)
 Strictly using allowed PyOpenGL functions per specification.
@@ -15,8 +15,9 @@ CONTROLS:
   [1]         : Side View
   [2]         : Top-Down View
   [3]         : Cinematic View
-  [C]         : God Mode (Cheat)
-  [V]         : Auto-Run AI (Cheat)
+  [4]         : Third Person View (Default)
+  [C]         : Cheat Mode (Invincibility)
+  [V]         : God Mode AI (Auto-Play)
   [B]         : Slow Motion (Cheat)
   [P]         : Pause
   [R]         : Restart
@@ -70,6 +71,8 @@ PLAYER_START_GRENADES = 5
 MAX_GRENADES = 5
 COMBO_TIMEOUT = 3.0
 VICTORY_SCORE = 5000
+SHIELD_DURATION = 10.0  # Shield lasts 10 seconds
+SPEED_BOOST_DURATION = 5.0  # Speed boost lasts 5 seconds
 
 # =============================================================================
 # GLOBAL STATE VARIABLES
@@ -101,8 +104,11 @@ player_is_sliding = False
 player_slide_timer = 0.0
 player_health = PLAYER_START_HEALTH
 player_grenades = PLAYER_START_GRENADES
-player_god_mode = False
+player_cheat_mode = False
 player_has_shield = False
+player_shield_timer = 0.0  # NEW: Track shield duration
+player_speed_boost_active = False  # NEW: Track speed boost
+player_speed_boost_timer = 0.0  # NEW: Track speed boost duration
 player_charging = False
 player_charge_start_time = 0.0
 player_animation_phase = 0.0
@@ -124,16 +130,25 @@ floating_platforms = []
 
 # Difficulty Progression
 difficulty_level = 1
-obstacle_spawn_rate = 0.02
+obstacle_spawn_rate = 0.04
 last_speed_up_score = 0
 
 # Cheats & AI
-ai_auto_run = False
+player_god_mode = False
 slow_motion = False
 
 # Statistics
 stats_obstacles_dodged = 0
 stats_gems_collected = 0
+
+# Guaranteed power-up tracking for first 2000m - 2 of each
+shield_spawn_count = 0  # Track how many shields spawned (need 2)
+speed_spawn_count = 0   # Track how many speed boosts spawned (need 2)
+grenade_spawn_count = 0 # Track how many grenade packs spawned (need 2)
+
+# On-Screen Message System
+on_screen_messages = []  # List of (message, timestamp) tuples
+MESSAGE_DISPLAY_DURATION = 2.5  # Seconds to show each message
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -155,6 +170,12 @@ def color_lerp(c1, c2, t):
     """Interpolate between two colors."""
     return (lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t))
 
+def show_message(message):
+    """Add a message to the on-screen display queue."""
+    global on_screen_messages
+    on_screen_messages.append((message, time.time()))
+    print(f"[MESSAGE] {message}")  # Also print to console
+
 # =============================================================================
 # INITIALIZATION FUNCTIONS
 # =============================================================================
@@ -168,6 +189,7 @@ def init_game():
     global combo_multiplier, combo_last_collect_time
     global stats_obstacles_dodged, stats_gems_collected
     global loading_countdown, player_perfect_dodge_count
+    global on_screen_messages
     
     game_state = "menu"
     current_speed = INITIAL_SPEED
@@ -187,6 +209,14 @@ def init_game():
     stats_gems_collected = 0
     player_perfect_dodge_count = 0
     
+    # Reset guaranteed power-up tracking - 2 of each
+    global shield_spawn_count, speed_spawn_count, grenade_spawn_count
+    shield_spawn_count = 0
+    speed_spawn_count = 0
+    grenade_spawn_count = 0
+    
+    on_screen_messages = []  # Clear messages
+    
     reset_player()
     
     obstacles = []
@@ -205,6 +235,7 @@ def reset_player():
     global player_velocity_y, player_is_jumping, player_is_sliding
     global player_health, player_grenades, player_has_shield
     global player_damage_flash, player_animation_phase
+    global player_shield_timer, player_speed_boost_active, player_speed_boost_timer
     
     player_x = 0.0
     player_y = 0.0
@@ -216,6 +247,9 @@ def reset_player():
     player_health = PLAYER_START_HEALTH
     player_grenades = PLAYER_START_GRENADES
     player_has_shield = False
+    player_shield_timer = 0.0
+    player_speed_boost_active = False
+    player_speed_boost_timer = 0.0
     player_damage_flash = 0.0
     player_animation_phase = 0.0
 
@@ -396,8 +430,8 @@ def draw_triangle_cone(base_radius, height, slices, color):
 def draw_robot_player():
     """Draw detailed humanoid robot with 6 primitive shapes."""
     global player_x, player_y, player_z, player_is_sliding, player_animation_phase
-    global player_god_mode, player_has_shield, player_charging
-    global player_charge_start_time, player_damage_flash
+    global player_cheat_mode, player_has_shield, player_charging
+    global player_charge_start_time, player_damage_flash, player_speed_boost_active
     
     glPushMatrix()
     glTranslatef(player_x, player_y, player_z)
@@ -409,10 +443,12 @@ def draw_robot_player():
     
     # Determine color scheme
     base_color = COL_NEON_CYAN
-    if player_god_mode:
+    if player_cheat_mode:
         base_color = COL_GOLD
     elif player_has_shield:
         base_color = COL_NEON_GREEN
+    elif player_speed_boost_active:
+        base_color = COL_NEON_YELLOW
     
     # Damage flash effect
     if player_damage_flash > 0:
@@ -509,27 +545,61 @@ def draw_robot_player():
     draw_triangle_cylinder(0.25, 0.2, 1.6, 10, base_color)
     glPopMatrix()
     
-    # Shield effect (wireframe sphere using points)
+    # Shield effect (wireframe sphere using points and lines)
     if player_has_shield:
         glPushMatrix()
         shield_pulse = 1.0 + 0.15 * math.sin(player_animation_phase * 2.5)
         glScalef(shield_pulse, shield_pulse, shield_pulse)
         
-        glPointSize(3.0)
-        glBegin(GL_POINTS)
+        # Draw shield wireframe circles using lines
+        glLineWidth(2.5)
         glColor3f(0.0, 1.0, 0.0)
         
-        # Distribute points on sphere surface
-        for i in range(100):
-            theta = random.uniform(0, 2 * math.pi)
-            phi = random.uniform(-math.pi/2, math.pi/2)
-            r = 2.2
-            px = r * math.cos(phi) * math.cos(theta)
-            py = r * math.sin(phi)
-            pz = r * math.cos(phi) * math.sin(theta)
-            glVertex3f(px, py, pz)
+        # Horizontal circles at different heights
+        for h in range(-2, 3):
+            height = h * 0.5
+            radius = math.sqrt(max(0, 2.2**2 - height**2))
+            
+            glBegin(GL_LINES)
+            segments = 24
+            for i in range(segments):
+                theta1 = 2 * math.pi * i / segments
+                theta2 = 2 * math.pi * (i + 1) / segments
+                
+                x1 = radius * math.cos(theta1)
+                z1 = radius * math.sin(theta1)
+                x2 = radius * math.cos(theta2)
+                z2 = radius * math.sin(theta2)
+                
+                glVertex3f(x1, height, z1)
+                glVertex3f(x2, height, z2)
+            glEnd()
         
-        glEnd()
+        # Vertical circles
+        for i in range(4):
+            angle = i * math.pi / 4
+            
+            glBegin(GL_LINES)
+            segments = 24
+            for j in range(segments):
+                theta1 = 2 * math.pi * j / segments
+                theta2 = 2 * math.pi * (j + 1) / segments
+                
+                y1 = 2.2 * math.sin(theta1)
+                r1 = 2.2 * math.cos(theta1)
+                y2 = 2.2 * math.sin(theta2)
+                r2 = 2.2 * math.cos(theta2)
+                
+                x1 = r1 * math.cos(angle)
+                z1 = r1 * math.sin(angle)
+                x2 = r2 * math.cos(angle)
+                z2 = r2 * math.sin(angle)
+                
+                glVertex3f(x1, y1, z1)
+                glVertex3f(x2, y2, z2)
+            glEnd()
+        
+        glLineWidth(1.0)
         glPopMatrix()
     
     glPopMatrix()
@@ -587,8 +657,6 @@ def draw_environment():
     """Draw the complete cyberpunk environment."""
     global total_distance, environment_stars, environment_buildings, floating_platforms
     
-    # Starfield removed for cleaner visual
-    
     # 2. SKY GRADIENT (Using large triangles)
     glDisable(GL_DEPTH_TEST)
     glBegin(GL_TRIANGLES)
@@ -622,8 +690,6 @@ def draw_environment():
     for building in environment_buildings:
         draw_triangle_cube(building['x'], building['height'] / 2, building['z'],
                           building['width'], building['color'])
-        
-        # Building windows removed for cleaner visual
     
     # 7. FLOATING PLATFORMS
     for platform in floating_platforms:
@@ -794,12 +860,49 @@ def draw_collectibles():
         elif col['type'] == 'gem_gold':
             draw_triangle_sphere(1.0, 12, 12, COL_GOLD)
         elif col['type'] == 'shield':
-            draw_triangle_sphere(0.8, 12, 12, COL_NEON_BLUE)
+            # Shield: Large green sphere with cube frame
+            draw_triangle_sphere(1.0, 12, 12, COL_NEON_GREEN)
+            # Add wireframe cube using lines for shield effect
+            glPushMatrix()
+            glScalef(1.3, 1.3, 1.3)
+            # Draw cube outline with lines
+            s = 0.5
+            glLineWidth(2.0)
+            glBegin(GL_LINES)
+            glColor3f(*COL_NEON_CYAN)
+            # Bottom square
+            glVertex3f(-s, -s, -s); glVertex3f(s, -s, -s)
+            glVertex3f(s, -s, -s); glVertex3f(s, -s, s)
+            glVertex3f(s, -s, s); glVertex3f(-s, -s, s)
+            glVertex3f(-s, -s, s); glVertex3f(-s, -s, -s)
+            # Top square
+            glVertex3f(-s, s, -s); glVertex3f(s, s, -s)
+            glVertex3f(s, s, -s); glVertex3f(s, s, s)
+            glVertex3f(s, s, s); glVertex3f(-s, s, s)
+            glVertex3f(-s, s, s); glVertex3f(-s, s, -s)
+            # Vertical lines
+            glVertex3f(-s, -s, -s); glVertex3f(-s, s, -s)
+            glVertex3f(s, -s, -s); glVertex3f(s, s, -s)
+            glVertex3f(s, -s, s); glVertex3f(s, s, s)
+            glVertex3f(-s, -s, s); glVertex3f(-s, s, s)
+            glEnd()
+            glLineWidth(1.0)
+            glPopMatrix()
         elif col['type'] == 'speed':
+            # Speed: Yellow cylinder with multiple rings
             glRotatef(90, 1, 0, 0)
             draw_triangle_cylinder(0.5, 0.5, 1.2, 10, COL_NEON_YELLOW)
+            # Add rings for emphasis
+            for i in range(3):
+                glTranslatef(0, 0, 0.3)
+                draw_triangle_cylinder(0.6, 0.6, 0.1, 8, COL_NEON_ORANGE)
         elif col['type'] == 'grenade':
+            # Grenade: Stack of orange cubes
             draw_triangle_cube(0, 0, 0, 0.8, COL_NEON_ORANGE)
+            glTranslatef(0, 0.5, 0)
+            draw_triangle_cube(0, 0, 0, 0.6, COL_NEON_ORANGE)
+            glTranslatef(0, 0.4, 0)
+            draw_triangle_cube(0, 0, 0, 0.4, COL_NEON_ORANGE)
         
         glPopMatrix()
 
@@ -857,7 +960,8 @@ def draw_particles():
 def draw_hud():
     """Draw heads-up display."""
     global current_score, total_distance, player_health, player_grenades
-    global game_state, combo_multiplier, player_god_mode, current_speed
+    global game_state, combo_multiplier, player_cheat_mode, player_god_mode, current_speed
+    global player_has_shield, player_shield_timer, player_speed_boost_active, player_speed_boost_timer
     
     # Switch to 2D orthographic projection
     glMatrixMode(GL_PROJECTION)
@@ -903,16 +1007,13 @@ def draw_hud():
     
     # PLAYING STATE
     elif game_state == "playing":
-        # Score (top-left)
-        draw_text(-0.95, 0.90, f"SCORE: {int(current_score)}", COL_WHITE)
-        
-        # Combo multiplier
+        # Combo multiplier (top-left)
         if combo_multiplier > 1:
             combo_text = f"x{combo_multiplier} COMBO!"
-            draw_text(-0.95, 0.82, combo_text, COL_GOLD)
+            draw_text(-0.95, 0.90, combo_text, COL_GOLD)
         
         # Distance (top-left)
-        draw_text(-0.95, 0.74, f"DISTANCE: {int(total_distance)}m", COL_WHITE)
+        draw_text(-0.95, 0.82, f"DISTANCE: {int(total_distance)}m", COL_WHITE)
         
         # Health (top-center with hearts)
         draw_text(-0.15, 0.90, "HP:", COL_WARNING)
@@ -955,6 +1056,9 @@ def draw_hud():
         # Grenades (top-right)
         draw_text(0.70, 0.90, f"GRENADES: {player_grenades}/{MAX_GRENADES}", COL_NEON_ORANGE)
         
+        # Score (top-right, below grenades) - PERMANENT DISPLAY
+        draw_text(0.70, 0.82, f"SCORE: {int(current_score)}", COL_NEON_CYAN)
+        
         # Speed indicator (bottom-right bar)
         speed_ratio = current_speed / MAX_SPEED
         bar_width = speed_ratio * 0.3
@@ -973,13 +1077,51 @@ def draw_hud():
         
         draw_text(0.67, -0.93, f"SPEED: {int(speed_ratio * 100)}%", COL_WHITE)
         
-        # God mode indicator
+        # Active power-up indicators (top-right below score)
+        active_y = 0.74
+        if player_has_shield:
+            remaining = int(player_shield_timer)
+            draw_text(0.70, active_y, f"SHIELD: {remaining}s", COL_NEON_GREEN)
+            active_y -= 0.08
+        
+        if player_speed_boost_active:
+            remaining = int(player_speed_boost_timer)
+            draw_text(0.70, active_y, f"SPEED BOOST: {remaining}s", COL_NEON_YELLOW)
+            active_y -= 0.08
+        
+        # Cheat mode indicator
+        if player_cheat_mode:
+            draw_text(-0.15, -0.85, "[CHEAT MODE ACTIVE]", COL_GOLD)
+        
+        # God mode (AI) indicator
         if player_god_mode:
-            draw_text(-0.15, -0.85, "[GOD MODE ACTIVE]", COL_GOLD)
+            # Position it below cheat mode if both are active, otherwise same level
+            y_pos = -0.92 if player_cheat_mode else -0.85
+            draw_text(-0.15, y_pos, "[GOD MODE AI ACTIVE]", COL_NEON_CYAN)
         
         # Perfect dodge streak
         if player_perfect_dodge_count >= 5:
             draw_text(-0.2, -0.75, f"PERFECT DODGES: {player_perfect_dodge_count}", COL_NEON_CYAN)
+        
+        # On-screen messages (center of screen, large and visible)
+        current_time = time.time()
+        # Clean up old messages
+        global on_screen_messages
+        on_screen_messages = [(msg, t) for msg, t in on_screen_messages if current_time - t < MESSAGE_DISPLAY_DURATION]
+        
+        # Display recent messages (max 3, stacked vertically in center)
+        for i, (msg, timestamp) in enumerate(on_screen_messages[-3:]):
+            age = current_time - timestamp
+            fade = 1.0 - (age / MESSAGE_DISPLAY_DURATION)  # Fade out over time
+            y_offset = 0.4 - i * 0.12  # Stack messages vertically from top-center
+            
+            # All messages use WHITE color as requested
+            base_col = COL_WHITE
+            msg_color = (base_col[0] * fade, base_col[1] * fade, base_col[2] * fade)
+            
+            # Center the text approximately
+            text_width = len(msg) * 0.015
+            draw_text(-text_width/2, y_offset, msg, msg_color)
     
     # PAUSED STATE
     elif game_state == "paused":
@@ -1030,6 +1172,7 @@ def update_game():
     global last_time, game_state, current_speed, total_distance, current_score
     global difficulty_level, last_speed_up_score, loading_countdown, obstacle_spawn_rate
     global combo_multiplier, combo_last_collect_time, player_perfect_dodge_count
+    global player_shield_timer, player_has_shield, player_speed_boost_timer, player_speed_boost_active
     
     current_time = time.time()
     dt = current_time - last_time
@@ -1059,8 +1202,26 @@ def update_game():
     
     # PLAYING STATE
     if game_state == "playing":
-        # Speed progression
-        current_speed = min(MAX_SPEED, current_speed + dt * SPEED_INCREMENT)
+        # Update power-up timers
+        if player_has_shield:
+            player_shield_timer -= dt
+            if player_shield_timer <= 0:
+                player_has_shield = False
+                player_shield_timer = 0
+                show_message("Shield Expired!")
+                print("[SHIELD] Shield expired!")
+        
+        if player_speed_boost_active:
+            player_speed_boost_timer -= dt
+            if player_speed_boost_timer <= 0:
+                player_speed_boost_active = False
+                player_speed_boost_timer = 0
+                show_message("Speed Boost Expired!")
+                print("[SPEED] Speed boost expired!")
+        
+        # Speed progression (faster with speed boost)
+        speed_multiplier = 1.5 if player_speed_boost_active else 1.0
+        current_speed = min(MAX_SPEED * speed_multiplier, current_speed + dt * SPEED_INCREMENT)
         distance_delta = current_speed * dt
         total_distance += distance_delta
         
@@ -1073,7 +1234,7 @@ def update_game():
         # Difficulty scaling every 500 points
         if int(current_score / 500) > int(last_speed_up_score / 500):
             difficulty_level += 1
-            obstacle_spawn_rate = min(0.05, obstacle_spawn_rate + 0.005)
+            obstacle_spawn_rate = min(0.08, obstacle_spawn_rate + 0.008)
             last_speed_up_score = current_score
             print(f"[SPEED UP] Level {difficulty_level}! Speed: {int(current_speed)}")
         
@@ -1093,14 +1254,14 @@ def update_game():
         update_floating_platforms(dt)
         
         # Spawning logic
-        if len(obstacles) < 5 and random.random() < obstacle_spawn_rate:
+        if len(obstacles) < 8 and random.random() < obstacle_spawn_rate:
             spawn_obstacle()
         
-        if len(collectibles) < 3 and random.random() < 0.015:
+        if len(collectibles) < 6 and random.random() < 0.05:
             spawn_collectible()
         
-        # AI auto-runner
-        if ai_auto_run:
+        # God mode (AI auto-runner)
+        if player_god_mode:
             update_ai()
         
         # Collision detection
@@ -1271,27 +1432,76 @@ def update_collectibles(dt, distance_delta):
 
 def spawn_collectible():
     """Spawn a random power-up."""
+    global shield_spawn_count, speed_spawn_count, grenade_spawn_count
+    
     lane = random.randint(0, 2)
     x = (lane - 1) * LANE_WIDTH
     z = -600
     y = 2.5
     
-    # Weighted random selection
-    r = random.random()
-    if r < 0.3:
-        col_type = 'gem_green'
-    elif r < 0.5:
-        col_type = 'gem_blue'
-    elif r < 0.65:
-        col_type = 'gem_purple'
-    elif r < 0.75:
-        col_type = 'gem_gold'
-    elif r < 0.85:
-        col_type = 'shield'
-    elif r < 0.92:
-        col_type = 'speed'
+    # Guaranteed power-ups in first 2000m - 2 of each type
+    if total_distance < 2000:
+        # Check which power-ups still need to spawn
+        needed_powerups = []
+        if shield_spawn_count < 2:
+            needed_powerups.append('shield')
+        if speed_spawn_count < 2:
+            needed_powerups.append('speed')
+        if grenade_spawn_count < 2:
+            needed_powerups.append('grenade')
+        
+        # If we still need to spawn guaranteed power-ups, prioritize them heavily
+        if needed_powerups and random.random() < 0.6:  # 60% chance to spawn needed power-up
+            col_type = random.choice(needed_powerups)
+            # Increment counter
+            if col_type == 'shield':
+                shield_spawn_count += 1
+                print(f"[SPAWN] Shield {shield_spawn_count}/2 spawned at distance {int(total_distance)}m")
+            elif col_type == 'speed':
+                speed_spawn_count += 1
+                print(f"[SPAWN] Speed boost {speed_spawn_count}/2 spawned at distance {int(total_distance)}m")
+            elif col_type == 'grenade':
+                grenade_spawn_count += 1
+                print(f"[SPAWN] Grenade pack {grenade_spawn_count}/2 spawned at distance {int(total_distance)}m")
+        else:
+            # Normal random selection for early game
+            r = random.random()
+            if r < 0.20:
+                col_type = 'gem_green'
+            elif r < 0.40:
+                col_type = 'gem_blue'
+            elif r < 0.55:
+                col_type = 'gem_purple'
+            elif r < 0.70:
+                col_type = 'gem_gold'
+            elif r < 0.80 and shield_spawn_count < 2:
+                col_type = 'shield'
+                shield_spawn_count += 1
+            elif r < 0.90 and speed_spawn_count < 2:
+                col_type = 'speed'
+                speed_spawn_count += 1
+            elif grenade_spawn_count < 2:
+                col_type = 'grenade'
+                grenade_spawn_count += 1
+            else:
+                col_type = 'gem_blue'  # Default to gem if all power-ups spawned
     else:
-        col_type = 'grenade'
+        # After 2000m - normal random spawning
+        r = random.random()
+        if r < 0.15:
+            col_type = 'gem_green'
+        elif r < 0.30:
+            col_type = 'gem_blue'
+        elif r < 0.42:
+            col_type = 'gem_purple'
+        elif r < 0.52:
+            col_type = 'gem_gold'
+        elif r < 0.68:
+            col_type = 'shield'
+        elif r < 0.84:
+            col_type = 'speed'
+        else:
+            col_type = 'grenade'
     
     col = {
         'type': col_type,
@@ -1301,6 +1511,7 @@ def spawn_collectible():
         'rot': 0
     }
     collectibles.append(col)
+    print(f"[COLLECTIBLE] Spawned {col_type} at lane {lane}, x={x:.1f}, y={y:.1f}, z={z:.1f}")
 
 def update_projectiles(dt):
     """Update player projectiles."""
@@ -1408,6 +1619,7 @@ def check_collisions():
     global player_grenades, combo_multiplier, combo_last_collect_time
     global stats_gems_collected, player_damage_flash, obstacles
     global collectibles, projectiles, player_perfect_dodge_count
+    global player_shield_timer, player_speed_boost_active, player_speed_boost_timer
     
     # Player bounding box
     player_box = {
@@ -1439,16 +1651,18 @@ def check_collisions():
                     collision = False
             
             if collision:
-                if player_god_mode:
-                    # God mode: destroy obstacle
+                if player_cheat_mode:
+                    # Cheat mode: destroy obstacle
                     obstacles.remove(obs)
                     spawn_explosion(obs['x'], 2, obs['z'], COL_GOLD, 12)
                     current_score += 50
                 elif player_has_shield:
                     # Shield absorbs hit
                     player_has_shield = False
+                    player_shield_timer = 0
                     obstacles.remove(obs)
                     spawn_explosion(obs['x'], 2, obs['z'], COL_NEON_GREEN, 12)
+                    show_message("SHIELD DESTROYED! No Damage Taken")
                     print("[SHIELD] Shield absorbed damage!")
                 else:
                     # Take damage
@@ -1500,41 +1714,72 @@ def check_collisions():
         dist = distance_3d(player_x, player_y, player_z, 
                           col['x'], col['y'], col['z'])
         
-        if dist < 2.5:
+        # Debug: Print positions when collectible is near
+        if col['z'] > -50 and col['z'] < 50:
+            print(f"[DEBUG] Collectible {col['type']} at x={col['x']:.1f}, y={col['y']:.1f}, z={col['z']:.1f} | Player at x={player_x:.1f}, y={player_y:.1f}, z={player_z:.1f} | Distance={dist:.2f}")
+        
+        # INCREASED collision radius from 2.5 to 5.0 for better detection
+        if dist < 5.0:
             collectibles.remove(col)
             stats_gems_collected += 1
             
-            # Apply effects
-            if col['type'] == 'gem_green':
-                current_score += 10 * combo_multiplier
-                update_combo()
-            elif col['type'] == 'gem_blue':
-                current_score += 25 * combo_multiplier
-                update_combo()
-            elif col['type'] == 'gem_purple':
-                current_score += 50 * combo_multiplier
-                update_combo()
-            elif col['type'] == 'gem_gold':
-                current_score += 100 * combo_multiplier
-                update_combo()
-            elif col['type'] == 'shield':
-                player_has_shield = True
-                print("[POWER-UP] Shield activated!")
-            elif col['type'] == 'speed':
-                # Speed boost (temporary)
-                global current_speed
-                current_speed = min(MAX_SPEED, current_speed * 1.5)
-                print("[POWER-UP] Speed boost!")
-            elif col['type'] == 'grenade':
-                player_grenades = min(MAX_GRENADES, player_grenades + 3)
-                print(f"[POWER-UP] +3 Grenades ({player_grenades}/5)")
+            print(f"[COLLECT] *** COLLECTED {col['type']} *** at distance {dist:.2f} | Current score before: {int(current_score)}")
             
-            # Visual feedback
-            spawn_explosion(col['x'], col['y'], col['z'], COL_GOLD, 8)
+            # Apply effects with specific colors for particles
+            if col['type'] == 'gem_green':
+                points = 10 * combo_multiplier
+                current_score += points
+                update_combo()
+                show_message(f"Green Gem is collected! +{points}pts")
+                spawn_explosion(col['x'], col['y'], col['z'], COL_NEON_GREEN, 12)
+                print(f"[SCORE] Green gem +{points} points | New score: {int(current_score)}")
+            elif col['type'] == 'gem_blue':
+                points = 25 * combo_multiplier
+                current_score += points
+                update_combo()
+                show_message(f"Blue Gem is collected! +{points}pts")
+                spawn_explosion(col['x'], col['y'], col['z'], COL_NEON_BLUE, 12)
+                print(f"[SCORE] Blue gem +{points} points | New score: {int(current_score)}")
+            elif col['type'] == 'gem_purple':
+                points = 50 * combo_multiplier
+                current_score += points
+                update_combo()
+                show_message(f"Purple Gem is collected! +{points}pts")
+                spawn_explosion(col['x'], col['y'], col['z'], COL_NEON_PURPLE, 12)
+                print(f"[SCORE] *** PURPLE GEM *** +{points} points | New score: {int(current_score)}")
+                print(f"[MESSAGE] Showing message: Purple Gem is collected! +{points}pts")
+            elif col['type'] == 'gem_gold':
+                points = 100 * combo_multiplier
+                current_score += points
+                update_combo()
+                show_message(f"Gold Gem is collected! +{points}pts")
+                spawn_explosion(col['x'], col['y'], col['z'], COL_GOLD, 15)
+                print(f"[SCORE] Gold gem +{points} points | New score: {int(current_score)}")
+            elif col['type'] == 'shield':
+                current_score += 75  # Shield awards 75 points
+                player_has_shield = True
+                player_shield_timer = SHIELD_DURATION
+                show_message("Shield is collected! +75pts")
+                spawn_explosion(col['x'], col['y'], col['z'], COL_NEON_GREEN, 15)
+                print(f"[SHIELD] *** SHIELD ACTIVATED *** +75 points | New score: {int(current_score)}")
+            elif col['type'] == 'speed':
+                current_score += 60  # Speed boost awards 60 points
+                player_speed_boost_active = True
+                player_speed_boost_timer = SPEED_BOOST_DURATION
+                show_message("Speed Boost is collected! +60pts")
+                spawn_explosion(col['x'], col['y'], col['z'], COL_NEON_YELLOW, 15)
+                print(f"[SPEED] Speed boost activated! +60 points | New score: {int(current_score)}")
+            elif col['type'] == 'grenade':
+                current_score += 50  # Grenade pack awards 50 points
+                player_grenades = min(MAX_GRENADES, player_grenades + 3)
+                show_message(f"Grenade Pack is collected! +50pts")
+                spawn_explosion(col['x'], col['y'], col['z'], COL_NEON_ORANGE, 15)
+                print(f"[GRENADE] Grenade pack collected! +50 points | New score: {int(current_score)}")
     
     # 4. PERFECT DODGE BONUS
     if player_perfect_dodge_count >= 10:
         current_score += 100
+        show_message("PERFECT DODGE BONUS +100pts!")
         print("[BONUS] Perfect Dodge +100 points!")
         player_perfect_dodge_count = 0
 
@@ -1565,7 +1810,7 @@ def handle_keyboard(key, x, y):
     """Handle keyboard input."""
     global player_lane_index, player_is_jumping, player_velocity_y
     global player_is_sliding, player_slide_timer, game_state
-    global player_god_mode, ai_auto_run, slow_motion, camera_mode
+    global player_cheat_mode, player_god_mode, slow_motion, camera_mode
     global loading_countdown
     
     k = key.lower()
@@ -1645,14 +1890,17 @@ def handle_keyboard(key, x, y):
         elif k == b'3':
             camera_mode = "cinematic"
             print("[CAMERA] Cinematic view")
+        elif k == b'4':
+            camera_mode = "third"
+            print("[CAMERA] Third person view (default)")
         
         # Cheats
         elif k == b'c':
-            player_god_mode = not player_god_mode
-            print(f"[CHEAT] God Mode: {'ON' if player_god_mode else 'OFF'}")
+            player_cheat_mode = not player_cheat_mode
+            print(f"[CHEAT] Cheat Mode: {'ON' if player_cheat_mode else 'OFF'}")
         elif k == b'v':
-            ai_auto_run = not ai_auto_run
-            print(f"[CHEAT] Auto-Runner AI: {'ON' if ai_auto_run else 'OFF'}")
+            player_god_mode = not player_god_mode
+            print(f"[CHEAT] God Mode (AI): {'ON' if player_god_mode else 'OFF'}")
         elif k == b'b':
             slow_motion = not slow_motion
             print(f"[CHEAT] Slow Motion: {'ON' if slow_motion else 'OFF'}")
@@ -1707,8 +1955,8 @@ def handle_mouse(button, state, x, y):
     
     # Right click - Grenade
     elif button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN:
-        if player_grenades > 0 or player_god_mode:
-            if not player_god_mode:
+        if player_grenades > 0 or player_cheat_mode:
+            if not player_cheat_mode:
                 player_grenades -= 1
             
             proj = {
@@ -1879,9 +2127,9 @@ def main():
     print("  SPACE   - Jump")
     print("  MOUSE L - Shoot (Hold for charge)")
     print("  MOUSE R - Grenade")
-    print("  F/1/2/3 - Camera modes")
+    print("  F/1/2/3/4 - Camera modes")
     print("  P       - Pause")
-    print("  C/V/B   - Cheats (God/AI/Slow-Mo)")
+    print("  C/V/B   - Cheats (Cheat/God-AI/Slow-Mo)")
     print("=" * 60)
     print("\nStarting game loop...")
     
