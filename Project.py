@@ -974,7 +974,7 @@ def draw_hud():
         draw_text(-0.3, 0.15, f"FINAL SCORE: {int(current_score)}", COL_WHITE)
         draw_text(-0.25, 0.0, f"DISTANCE: {int(total_distance)}m", COL_WHITE)
         draw_text(-0.25, -0.15, "PRESS R TO RESTART", COL_GRAY)
-        draw_text(-0.3, -0.3, "PRESS C TO CONTINUE", COL_NEON_GREEN)
+        draw_text(-0.3, -0.3, "PRESS R TO RESTART", COL_NEON_GREEN)
     
     glEnable(GL_DEPTH_TEST)
     glMatrixMode(GL_PROJECTION)
