@@ -1434,7 +1434,7 @@ def check_collisions():
                 if proj['type'] == 'charge':
                     damage = 10
                 elif proj['type'] == 'grenade':
-                    damage = 5
+                    damage = 10
                 else:
                     damage = 1
                 
